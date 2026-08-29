@@ -18,8 +18,11 @@ gates, and locked architecture decisions (Appendix A/B). Read it before any work
 
 - Sources contain `__PLACEHOLDER__` tokens only. Real values live **only** in
   `.env` (chmod 600, git-ignored; template `.env.example`; doesn't exist until created).
-- `python3 scripts/sanitize.py` must report **clean before every commit**;
-  `--clean` scrubs in place. It is the pre-commit gate.
+- **Always run `python3 scripts/sanitize.py` before every commit AND before any
+  push** — including routine ones the user asks for casually. It is a real
+  gate: exit 0 = safe, exit 1 = secrets found, commit/push must not proceed.
+  `--clean` scrubs in place and exits 0 only after re-verifying the scrub.
+  Chain it: `python3 scripts/sanitize.py && git commit ...`
 - `scripts/inject.py <file> [--inplace]` fills tokens from env at deploy time —
   deploy scripts write injected copies to `/dev/shm` and delete them on exit.
   Cred-embedded code or `firmware.bin` is **never persisted on this machine**.

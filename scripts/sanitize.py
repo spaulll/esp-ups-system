@@ -7,8 +7,11 @@ from .env at build/push time (see scripts/inject.py). Idempotent —
 placeholders are never re-matched.
 
 Usage:
-  python3 scripts/sanitize.py             # report only
-  python3 scripts/sanitize.py --clean     # rewrite files in place
+  python3 scripts/sanitize.py             # gate: exit 0 = clean, 1 = secrets found
+  python3 scripts/sanitize.py --clean     # scrub in place, then re-verify
+
+Run before EVERY commit and before any push. Chainable:
+  python3 scripts/sanitize.py && git commit ...
 """
 import argparse
 import re
@@ -80,6 +83,7 @@ def main():
     args = ap.parse_args()
 
     total = 0
+    cleaned = []
     for path in iter_files():
         try:
             text = path.read_text()
@@ -100,12 +104,24 @@ def main():
 
         if args.clean:
             path.write_text(clean(text))
+            cleaned.append(path)
 
-    mode = "CLEANED" if args.clean else "FOUND"
-    print(f"\n{mode}: {total} occurrence(s) across the repo."
-          if total else "Repo is clean — no secrets detected.")
-    if total and not args.clean:
+    if total and args.clean:
+        # Rules are idempotent, so a re-scan must be empty. A hit here means
+        # a broken rule — fail the gate rather than trust the scrub.
+        residual = sum(len(scan(p.read_text())) for p in cleaned)
+        if residual:
+            print(f"\nERROR: {residual} occurrence(s) survived --clean — fix RULES.")
+            return 1
+        print(f"\nCLEANED: {total} occurrence(s). Repo is now clean.")
+        return 0
+
+    if total:
+        print(f"\nFOUND: {total} occurrence(s) — COMMIT/PUSH BLOCKED until clean.")
         print("Run with --clean to scrub.")
+        return 1
+
+    print("Repo is clean — no secrets detected.")
     return 0
 
 
