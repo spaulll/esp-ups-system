@@ -19,7 +19,7 @@
 
 | Phase | Title | Status | Acceptance gate |
 |---|---|---|---|
-| 0 | Repo scaffold + deploy tooling | ☐ Not started | `deploy-pi.sh` idempotent, git tags work |
+| 0 | Repo scaffold + deploy tooling | ✅ Done | `deploy-pi.sh` idempotent, git tags work |
 | 1 | Firmware v2 core (GPIO mains, state machine, actuation) | ☐ Not started | Bench test with jumper wire: full shutdown→WOL cycle |
 | 2 | Pi brain v2 (reconciler, TG, ntfy, alert engine) | ☐ Not started | Kill-restart drill: zero lost/duplicate alerts |
 | 3 | Optocoupler hardware bring-up | ⏸ Awaiting part | 20/20 real unplug cycles, 0 false triggers in 7-day soak |
@@ -96,11 +96,13 @@ ups-system/
 
 ## Phase 0 — Repo Scaffold + Deploy Tooling
 
-- [ ] `git init` in `/root/ups-system`, commit current v1 files into `legacy/` for reference, create target layout above
-- [ ] Write `deploy/deploy-pi.sh` (backup → copy → restart → health check; §7.1)
-- [ ] Write `deploy/ota-esp32.sh` (build → OTA → fw-verify; §7.2)
-- [ ] Secrets flow in place: `.env` (git-ignored) + `.env.example` template; repo sources carry `__PLACEHOLDER__` tokens only (`scripts/sanitize.py --clean`); deploy injects via `scripts/inject.py` into `/dev/shm` — cred-embedded code never persisted locally; **rotate the tokens v1 exposed**
-- [ ] Add `git tag phase<N>-<date>` discipline to deploy scripts
+- [x] `git init` in `/root/ups-system`, v1 preserved on `legacy` branch, target layout created (`firmware/`, `pi/`, `hardware/`, `tests/` as `__STUB__` placeholders)
+- [x] Write `deploy/deploy-pi.sh` (backup → copy → restart → health check; §7.1) — + `--dry-run`, sanitize/stub/dirty-tree gates, per-deploy tag `pi-<date>`
+- [x] Write `deploy/ota-esp32.sh` (build → OTA → fw-verify; §7.2) — + v1/v2-aware pre-flight, per-deploy tag `esp-<date>`
+- [x] Secrets flow in place: `.env` (git-ignored) + `.env.example` template; repo sources carry `__PLACEHOLDER__` tokens only (`scripts/sanitize.py --clean`); deploy injects via `scripts/inject.py` into `/dev/shm` — cred-embedded code never persisted locally
+- [x] Real `.env` created from template (chmod 600, key check passed)
+- [ ] **Remaining (user):** **rotate the tokens v1 exposed** (TG bot token, PVE token secret, WiFi/OTA passes) before first deploy; live double-run of both scripts happens at first v2 deploy
+- [x] Add `git tag` discipline to deploy scripts (per-deploy `pi-<date>` / `esp-<date>` tags; dirty tree refuses to deploy)
 
 **Acceptance:** running each script twice in a row changes nothing and breaks nothing.
 
@@ -203,9 +205,9 @@ ups-system/
 
 ### 7.0 One-time setup
 
-- [ ] `cp .env.example .env && chmod 600 .env` — fill real values (incl. `PI_PASS`; deploys use `sshpass`)
-- [ ] `sudo apt install sshpass` on this machine (deploy auth: `sshpass -p "$PI_PASS"`)
-- [ ] `python3 scripts/sanitize.py` — must report **clean** before any commit
+- [x] `cp .env.example .env && chmod 600 .env` — real values filled (incl. `PI_PASS`)
+- [x] `sudo apt install sshpass` on this machine (deploy auth: `sshpass -p "$PI_PASS"`)
+- [x] `python3 scripts/sanitize.py` — must report **clean** before any commit
 
 ### 7.1 `deploy/deploy-pi.sh` — env-inject, push, install, verify
 

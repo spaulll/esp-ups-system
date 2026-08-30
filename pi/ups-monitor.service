@@ -1,0 +1,7 @@
+# __STUB__ — real systemd unit lands in Phase 2 (UPGRADE_PLAN).
+# deploy/deploy-pi.sh refuses to push stubs to the live Pi.
+[Unit]
+Description=UPS monitor v2 (stub, not installable)
+[Service]
+Type=oneshot
+ExecStart=/bin/true

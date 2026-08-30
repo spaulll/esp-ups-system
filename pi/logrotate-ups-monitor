@@ -1,0 +1,6 @@
+# __STUB__ — real logrotate config lands in Phase 2 (UPGRADE_PLAN: weekly x8).
+# deploy/deploy-pi.sh refuses to push stubs to the live Pi.
+/var/log/ups-monitor.log {
+    weekly
+    rotate 8
+}
