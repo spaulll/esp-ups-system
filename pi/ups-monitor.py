@@ -92,8 +92,8 @@ _notify_lock  = threading.Lock()
 _info_pending = None        # {events: [..], since: ts, notify_at: ts}
 
 # live countdown updater
-_cd_last_sent = 0.0         # last time we pushed a live countdown card
-_cd_sent_count = 0          # cards sent this outage (rate-limit cap)
+_cd_last_sent = 0.0         # last time we pushed a live countdown update
+_cd_msg_id = None           # message_id of the single live countdown card
 _esp_state_ts = 0.0         # wall-clock when _esp32_state was last refreshed
 
 # pending live-command confirmations: cmd -> {"message_id","mins","sent"}
@@ -474,6 +474,19 @@ def _tg_edit_msg(message_id, text):
             return json.loads(r.read().decode()).get("ok", False)
     except Exception as e:
         log.warning(f"telegram edit failed: {e}")
+        return False
+
+
+def _tg_del_msg(message_id):
+    """Delete a bot message. Returns True on success."""
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/deleteMessage"
+    data = json.dumps({"chat_id": TG_CHAT_ID, "message_id": message_id}).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with _tg_opener().open(req, timeout=TG_POLL_TIMEOUT + 5) as r:
+            return json.loads(r.read().decode()).get("ok", False)
+    except Exception as e:
+        log.warning(f"telegram delete failed: {e}")
         return False
 
 def _strip_html(text):
@@ -914,23 +927,58 @@ def _build_countdown_card():
             f"   <code>{bar}</code>  {int(frac * 100)}%")
 
 
-def countdown_updater():
-    """Smart live progress: 30s cadence early, 5s in the final 2 minutes."""
-    global _cd_last_sent
-    log.info("countdown updater started")
-    while True:
-        _expire_pending_confirmations()
-        card = _build_countdown_card()
-        now = time.time()
-        if card:
+def _cd_interval(elapsed_ms, delay_ms):
+    """Adaptive update cadence: 5s at start, slowing through the middle,
+    back to 5s in the final 2 minutes (decision window)."""
+    remain = delay_ms - elapsed_ms
+    if remain <= 120000:          # last 2 min -> fast
+        return 5
+    if elapsed_ms <= 60000:       # first minute -> fast, shows it's live
+        return 5
+    ramp_start, ramp_end = 60000, delay_ms - 120000
+    if ramp_end > ramp_start:
+        f = (elapsed_ms - ramp_start) / (ramp_end - ramp_start)
+    else:
+        f = 0.0
+    return int(round(5 + 40 * min(1.0, max(0.0, f))))   # 5s .. 45s
+
+
+def _countdown_tick():
+    """One update cycle for the live countdown card. Returns True if a card is live."""
+    global _cd_last_sent, _cd_msg_id
+    card = _build_countdown_card()
+    now = time.time()
+    if card:
+        if _cd_msg_id is None:
+            # countdown started -> send the live card once
+            _cd_msg_id = _tg_send_msg(card)
+            _cd_last_sent = now
+        else:
             with _lock:
                 mfail = _esp32_state.get("mainsFailSinceMs", 0) or 0
                 mdelay = _esp32_state.get("mainsDelayMs", 300000) or 1
-            urgent_window = mfail > 0 and (mdelay - mfail) <= 120000
-            interval = 5 if urgent_window else 30
+            interval = _cd_interval(mfail, mdelay)
             if now - _cd_last_sent >= interval:
-                _deliver(card, urgent=False)
-                _cd_last_sent = now
+                if not _tg_edit_msg(_cd_msg_id, card):
+                    # message gone (edited too much / deleted) -> resend
+                    _cd_msg_id = None
+                else:
+                    _cd_last_sent = now
+        return True
+    # countdown over (restored / shutdown / override) -> clean up the card
+    if _cd_msg_id is not None:
+        _tg_del_msg(_cd_msg_id)
+        _cd_msg_id = None
+    _cd_last_sent = 0
+    return False
+
+
+def countdown_updater():
+    """Live countdown card: ONE message edited in place at an adaptive cadence."""
+    log.info("countdown updater started")
+    while True:
+        _expire_pending_confirmations()
+        _countdown_tick()
         time.sleep(2)
 
 
