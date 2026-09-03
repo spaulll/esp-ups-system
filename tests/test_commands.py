@@ -69,6 +69,21 @@ def test_delay_set_edits_waiting_message_on_confirm(pm):
         assert "mainsdelay" not in pm._pending_conf, "pending not cleared after confirm"
 
 
+def test_delay_set_pending_registered_before_esp_call(pm):
+    """The pending conf must exist before the ESP command fires, else a fast
+    ack (webhook -> reconcile) races ahead into the info summary."""
+    order = []
+    def slow_esp(cmd_dict):
+        with pm._pending_conf_lock:
+            has_pending = "mainsdelay" in pm._pending_conf
+        order.append(("esp_call", has_pending))
+        return True
+    pm._esp_command = slow_esp
+    pm.handle_command("/mainsdelay", "10")
+    assert order and order[0] == ("esp_call", True), \
+        f"pending not registered before esp command: {order}"
+
+
 def test_delay_set_without_pending_falls_through_to_summary(pm):
     # no pending command — the event is a normal info summary
     pm.process_event("mains_delay_set", 50, {"event": "mains_delay_set", "data": "12min"})

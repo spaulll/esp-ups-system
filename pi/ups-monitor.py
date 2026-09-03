@@ -807,19 +807,28 @@ def cmd_set_delay(cmd, mins_str):
     lo, hi = (1, 720) if cmd == "mainsdelay" else (5, 120)
     if not (lo <= mins <= hi):
         return f"❌ {cmd} range is {lo}–{hi}."
-    if not _esp_command({"cmd": cmd, "minutes": mins}):
-        return "❌ ESP32 unreachable."
-    # Reply with a live "waiting" message; it gets EDITED in place once the
-    # ESP confirms via its event ledger (see _maybe_confirm_pending_set).
     label = "power" if cmd == "mainsdelay" else "internet"
     human = f"{mins} min"
+    # Register the pending confirmation BEFORE sending the command: the ESP
+    # can ack within milliseconds via its webhook nudge, and if we register
+    # late the event races ahead into the slow info summary. Register first.
     sent_id = _tg_send_msg(f"⏳ Setting {label} delay to <b>{human}</b>… waiting for confirmation")
     if sent_id is not None:
         with _pending_conf_lock:
             _pending_conf[cmd] = {"message_id": sent_id, "label": label,
                                   "human": human, "mins": mins, "sent": time.time()}
-        return None   # no extra reply — the live message is the confirmation
-    return "✅ Command sent."
+    ok = _esp_command({"cmd": cmd, "minutes": mins})
+    if not ok:
+        # command failed — edit the waiting message immediately
+        if sent_id is not None:
+            _tg_edit_msg(sent_id,
+                         f"❌ Couldn't reach the sensor to set {label} delay. Use /diag.")
+        else:
+            return "❌ ESP32 unreachable."
+        with _pending_conf_lock:
+            _pending_conf.pop(cmd, None)
+        return None
+    return None   # live message gets edited to "confirmed" when the ESP acks
 
 def _tg_get(path, params):
     """GET a Telegram API path with optional SOCKS proxy."""
