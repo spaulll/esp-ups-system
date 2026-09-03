@@ -90,7 +90,6 @@ uint32_t wakeFailedCount = 0;
 volatile bool cachedMainsUp = true;
 volatile bool cachedWanUp   = true;
 volatile int  cachedMainsRaw = HIGH;
-volatile int  cachedRssi    = -127;
 volatile int  pendingBlips  = 0;
 portMUX_TYPE  cacheMux      = portMUX_INITIALIZER_UNLOCKED;
 
@@ -480,26 +479,60 @@ void wanCheckTask(void* pv) {
   TickType_t lastWake = xTaskGetTickCount();
   for (;;) {
     esp_task_wdt_reset();
-    bool up = tcpCheck(WAN_TARGET_1, WAN_PORT, WAN_TCP_TIMEOUT) ||
-              tcpCheck(WAN_TARGET_2, WAN_PORT, WAN_TCP_TIMEOUT);
+    bool up = false;
+    // Only touch the TCP stack when associated — a blocking connect() while
+    // WiFi is down starves the core-0 idle task and panics the interrupt WDT.
+    if (WiFi.status() == WL_CONNECTED) {
+      up = tcpCheck(WAN_TARGET_1, WAN_PORT, WAN_TCP_TIMEOUT) ||
+           tcpCheck(WAN_TARGET_2, WAN_PORT, WAN_TCP_TIMEOUT);
+    }
     portENTER_CRITICAL(&cacheMux);
     cachedWanUp = up;
-    cachedRssi  = WiFi.RSSI();
     portEXIT_CRITICAL(&cacheMux);
     vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(WAN_POLL_MS));
   }
 }
 
-// ==================== WIFI RECONNECT ====================
+// ==================== WIFI ====================
+bool bssidLockActive = true;   // drop the lock if locked connect keeps failing
+
+void wifiConnectOnce(bool locked) {
+  if (locked) {
+    WiFi.begin(WIFI_SSID, WIFI_PASS, 0, MAIN_ROUTER_BSSID);
+  } else {
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+  }
+}
+
+void dumpWifiScan() {
+  int n = WiFi.scanNetworks();
+  Serial.printf("[wifi] scan: %d networks\n", n);
+  for (int i = 0; i < n && i < 15; i++) {
+    Serial.printf("[wifi]   %-20s rssi=%d ch=%d\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i));
+  }
+  WiFi.scanDelete();
+}
+
 void handleWifiReconnect() {
   if (WiFi.status() != WL_CONNECTED) {
     static unsigned long last = 0;
+    static unsigned long failSince = 0;
     unsigned long now = millis();
     if (now - last > 5000) {
       last = now;
+      if (failSince == 0) failSince = now;
       WiFi.disconnect();
-      WiFi.begin(WIFI_SSID, WIFI_PASS, 0, MAIN_ROUTER_BSSID);
+      wifiConnectOnce(bssidLockActive);
+      // If locked connect can't associate after ~30s total, the .env BSSID is
+      // stale — fall back to plain SSID connect so the sensor still works.
+      if (bssidLockActive && (now - failSince >= 30000)) {
+        Serial.println("[wifi] locked connect failing — dropping BSSID lock");
+        bssidLockActive = false;
+        failSince = 0;
+      }
     }
+  } else {
+    bssidLockActive = true;   // re-arm lock once we have a working link
   }
 }
 
@@ -559,9 +592,10 @@ void handleGetState() {
   bool mUp = cachedMainsUp;
   bool wUp = cachedWanUp;
   int raw = cachedMainsRaw;
-  int rssi = cachedRssi;
   int blips = pendingBlips;
   portEXIT_CRITICAL(&cacheMux);
+  // RSSI is read here (server context, core 1) — never from a background task.
+  int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -127;
   unsigned long now = millis();
   JsonDocument d;
   d["mainsRaw"] = raw;
@@ -657,8 +691,11 @@ void handlePostCommand() {
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(115200);
+  Serial.println("[boot] setup start");
   pinMode(MAINS_SENSE_PIN, INPUT_PULLUP);
   loadState();
+  Serial.printf("[boot] flags s=%d w=%d m=%d off=%d ovr=%d\n",
+                sdMains, sdWAN, sdManual, manualOffWhileMainsDown, manualOverride);
   // if flags set at boot, re-issue shutdown webhook (we can't trust it completed
   // before a reboot). Webhook retries will fail harmlessly if node is already off.
   if (isNodeDown()) {
@@ -666,13 +703,26 @@ void setup() {
     sdRetry = 0;
     sdLastTry = 0;
   }
-  esp_task_wdt_init(10, true);
+  esp_task_wdt_init(30, true);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  WiFi.begin(WIFI_SSID, WIFI_PASS, 0, MAIN_ROUTER_BSSID);
+  wifiConnectOnce(bssidLockActive);
+  Serial.println("[boot] wifi begin");
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
     delay(100);
+  }
+  Serial.printf("[boot] wifi status=%d\n", WiFi.status());
+  if (WiFi.status() != WL_CONNECTED) {
+    dumpWifiScan();
+    bssidLockActive = false;
+    wifiConnectOnce(false);
+    Serial.println("[boot] retrying without BSSID lock...");
+    unsigned long t2 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t2 < 10000) {
+      delay(100);
+    }
+    Serial.printf("[boot] wifi status=%d\n", WiFi.status());
   }
   ArduinoOTA.setHostname("esp32-ups-monitor");
   ArduinoOTA.setPassword(OTA_PASSWORD);
@@ -684,8 +734,10 @@ void setup() {
   xTaskCreatePinnedToCore(mainsCheckTask, "mainsCheck", 4096, NULL, 2, &mainsTaskH, 0);
   xTaskCreatePinnedToCore(wanCheckTask,   "wanCheck",   4096, NULL, 1, &wanTaskH,   0);
   espBootTime = millis();
+  Serial.println("[boot] setup done");
   delay(500);
   addEvent("esp_booted", resetReasonStr().c_str());
+  Serial.printf("[boot] events seq=%lu\n", evSeq);
 }
 
 // ==================== MAIN LOOP ====================
@@ -755,17 +807,20 @@ void loop() {
       saveState();
     }
   }
-  // WAN COUNTDOWN
+  // WAN COUNTDOWN (only when WiFi is up — otherwise we can't reach the targets)
+  bool wifiOk = (WiFi.status() == WL_CONNECTED);
   if (!wanUp) {
-    if (!wanDownNotified) {
+    if (wifiOk && !wanDownNotified) {
       wanDownNotified = true;
       wanFailSince = now;
     }
-    if (!isNodeDown() && (now - wanFailSince >= wanTimeoutMs)) {
+    if (wifiOk && !isNodeDown() && (now - wanFailSince >= wanTimeoutMs)) {
       executeShutdown("wan");
     }
   } else {
-    wanDownNotified = false;
-    wanFailSince = 0;
+    if (wanDownNotified) {
+      wanDownNotified = false;
+      wanFailSince = 0;
+    }
   }
 }
