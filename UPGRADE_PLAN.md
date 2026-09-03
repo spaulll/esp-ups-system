@@ -20,7 +20,7 @@
 | Phase | Title | Status | Acceptance gate |
 |---|---|---|---|
 | 0 | Repo scaffold + deploy tooling | ✅ Done | `deploy-pi.sh` idempotent, git tags work |
-| 1 | Firmware v2 core (GPIO mains, state machine, actuation) | ☐ Not started | Bench test with jumper wire: full shutdown→WOL cycle |
+| 1 | Firmware v2 core (GPIO mains, state machine, actuation) | 🔶 In progress | Bench test with jumper wire: full shutdown→WOL cycle |
 | 2 | Pi brain v2 (reconciler, TG, ntfy, alert engine) | ☐ Not started | Kill-restart drill: zero lost/duplicate alerts |
 | 3 | Optocoupler hardware bring-up | ⏸ Awaiting part | 20/20 real unplug cycles, 0 false triggers in 7-day soak |
 | 4 | UX polish + observability | ☐ Not started | Drill matrix §5 produces exactly the documented messages |
@@ -111,30 +111,33 @@ ups-system/
 ## Phase 1 — Firmware v2 Core 🔴
 
 > PlatformIO project. Everything on this phase is testable on the bench **before** the optocoupler arrives: mains input is a GPIO that we drive with a jumper wire / pushbutton.
+>
+> **Status:** code complete, compiles clean (`pio run -d firmware`). Bench drill below still outstanding — that's a hands-on jumper-wire run, not code.
 
 ### 1.1 Inputs
-- [ ] GPIO input on **GPIO 13 (D13)** (changed from D27 — chosen because 13 is not a boot-strap pin, so optocoupler state at reset can't affect boot mode), `INPUT_PULLUP`, optocoupler pulls LOW when mains present, with 500ms hardware-ish debounce + **3s stability rule**: 3s low = mains down, 3s high = mains up
-- [ ] WAN check: TCP `8.8.8.8:53` / `1.1.1.1:53` (2s budget, any success = up), every 15s
-- [ ] No reference to 192.168.0.2 anywhere — the extender is dead to us
+- [x] GPIO input on **GPIO 13 (D13)** (changed from D27 — chosen because 13 is not a boot-strap pin, so optocoupler state at reset can't affect boot mode), `INPUT_PULLUP`, optocoupler pulls LOW when mains present, with 500ms hardware-ish debounce + **3s stability rule**: 3s low = mains down, 3s high = mains up
+- [x] WAN check: TCP `8.8.8.8:53` / `1.1.1.1:53` (2s budget, any success = up), every 15s
+- [x] No reference to 192.168.0.2 anywhere — the extender is dead to us
 
 ### 1.2 Timers & policy (all persisted in NVS, all TG-adjustable)
-- [ ] `mainsDelayMs` — default 300000 (5 min); `/mainsdelay <1–720>` from TG; persisted
-- [ ] `wanTimeoutMs` — default 600000 (10 min); TG-adjustable for symmetry
-- [ ] Restore sequence constants: `SETTLE_MS = 15000`, `PROX_POLL_SEC = 15`, `RE_WOL_AFTER = 120s`, `MAX_WOL = 5`
+- [x] `mainsDelayMs` — default 300000 (5 min); `/mainsdelay <1–720>` from TG; persisted
+- [x] `wanTimeoutMs` — default 600000 (10 min); TG-adjustable for symmetry
+- [x] Restore sequence constants: `SETTLE_MS = 15000`, `PROX_POLL_SEC = 15`, `RE_WOL_AFTER = 120s`, `MAX_WOL = 5`
 
 ### 1.3 Actuation
-- [ ] Shutdown: `GET http://192.168.0.50:9999/shutdown` (agent on the node) — on failure retry every 10s ×6; every attempt logged to ledger (`shutdown_webhook_ok/failed`)
-- [ ] Wake: `SETTLE_MS` → WOL broadcast ×3 packets 1s apart → liveness check every 15s (**ICMP ping, then TCP :8006 — both must pass**) → still down after 120s → re-WOL (≤5 attempts) → `wol_rexmitted` events; give-up emits `wake_failed` (critical)
-- [ ] Flags: `sdMains`, `sdWAN`, `sdManual`, `manualOffWhileMainsDown`, `manualOverride` — NVS-persisted, semantics per edge-case table
+- [x] Shutdown: `GET http://192.168.0.50:9999/shutdown` (agent on the node) — on failure retry every 10s ×6; every attempt logged to ledger (`shutdown_webhook_ok/failed`)
+- [x] Wake: `SETTLE_MS` → WOL broadcast ×3 packets 1s apart → liveness check every 15s (**ICMP ping, then TCP :8006 — both must pass**) → still down after 120s → re-WOL (≤5 attempts) → `wol_rexmitted` events; give-up emits `wake_failed` (critical)
+- [x] Flags: `sdMains`, `sdWAN`, `sdManual`, `manualOffWhileMainsDown`, `manualOverride` — NVS-persisted, semantics per edge-case table (incl. "both flags set" when both causes down at fire time)
 
 ### 1.4 Interfaces (keep from v1, they were sound)
-- [ ] `GET /state` — flags, timers, `mainsRaw`, `wanUp`, `espUptimeMs`, `espResetReason`, heap, rssi (cached, fixed -1 bug), counters, `fw`
-- [ ] `GET /events?since=N` — RAM ring buffer (32) of `{seq, event, uptimeMs, data}`; NVS-persisted monotonic `seq`
-- [ ] `POST /command` — `wake`, `shutdown`, `mainsdelay`, `wantimeout`, `set_gpio_test` (simulate mains low/high for bench drills) — all deferred out of server context
-- [ ] `notifyPi()` webhook = fast-path nudge only (fire-and-forget OK; ledger is authority), carries `&seq=`
-- [ ] WiFi: non-blocking reconnect (BSSID-locked), task watchdogs on network tasks, `WiFi.setSleep(false)`
+- [x] `GET /state` — flags, timers, `mainsRaw`, `wanUp`, `espUptimeMs`, `espResetReason`, heap, rssi (cached, fixed -1 bug), counters, `fw`
+- [x] `GET /events?since=N` — RAM ring buffer (32) of `{seq, event, uptimeMs, data}`; NVS-persisted monotonic `seq`
+- [x] `POST /command` — `wake`, `shutdown`, `mainsdelay`, `wantimeout`, `set_gpio_test` (simulate mains low/high for bench drills) — all deferred out of server context
+- [x] `notifyPi()` webhook = fast-path nudge only (fire-and-forget OK; ledger is authority), carries `&seq=` + shared token
+- [x] WiFi: non-blocking reconnect (BSSID-locked), task watchdogs on network tasks, `WiFi.setSleep(false)`
 
 **Phase 1 acceptance (bench):** jumper-wire drill — pull GPIO low 5+ min → shutdown webhook hits test receiver; restore → 15s → WOL packets seen (Wireshark/tcpdump) → re-WOL fires if :8006 unreachable; `/events` replays cleanly to a mock Pi; ESP32 reboot mid-countdown resumes correctly from NVS.
+- [ ] **Remaining (user):** add `NOTIFY_TOKEN=__NOTIFY_TOKEN__ (long random) + `PI_NOTIFY_URL=` to `.env` (new keys this phase); then the hands-on bench drill above via `deploy/ota-esp32.sh`.
 
 ---
 

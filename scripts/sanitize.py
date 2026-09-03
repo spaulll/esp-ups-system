@@ -48,6 +48,8 @@ RULES = [
         "__WIFI_BSSID_BYTES__"),
     ("MAC",            re.compile(r"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b"), "__MAC__"),
     ("NTFY_DDNS",      re.compile(r"\b[\w-]+\.duckdns\.org\b"), "__NTFY_DDNS_HOST__"),
+    ("NOTIFY_TOKEN",   re.compile("NOTIFY_TOKEN" + r"=(?!__)[^\s\"\']+"), "NOTIFY_TOKEN=__NOTIFY_TOKEN__"),
+    ("NOTIFY_TOKEN_Q", re.compile(r"(?:[?&]token=)(?!__)[^\s&\"']{8,}"), "&token=__NOTIFY_TOKEN__"),
 ]
 
 
