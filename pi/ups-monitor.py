@@ -666,9 +666,9 @@ def cmd_status():
     mains = s.get("mainsUp", False)
     wan = s.get("wanUp", False)
     lines = [header]
-    lines.append(f"{'🟢' if mains else '🔴'} <b>Mains</b>       <code>{'UP' if mains else 'DOWN'}</code>")
-    lines.append(f"{'🟢' if wan else '🔴'} <b>WAN</b>         <code>{'UP' if wan else 'DOWN'}</code>")
-    lines.append(f"{'🟢' if prox_online else '🔴'} <b>Proxmox</b>     <code>{'ONLINE' if prox_online else 'OFFLINE'}</code>"
+    lines.append(f"{'🟢' if mains else '🔴'} <b>Mains</b>   <code>{'UP' if mains else 'DOWN'}</code>")
+    lines.append(f"{'🟢' if wan else '🔴'} <b>WAN</b>     <code>{'UP' if wan else 'DOWN'}</code>")
+    lines.append(f"{'🟢' if prox_online else '🔴'} <b>Proxmox</b> <code>{'ONLINE' if prox_online else 'OFFLINE'}</code>"
                  + (f" · {prox_up}" if prox_online else ""))
 
     mfail = s.get("mainsFailSinceMs", 0)
