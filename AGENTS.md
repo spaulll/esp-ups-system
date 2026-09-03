@@ -37,7 +37,7 @@ gates, and locked architecture decisions (Appendix A/B). Read it before any work
 
 ## Architecture invariants (do not regress)
 
-- **Mains is sensed by an optocoupler on GPIO 27 (active-LOW, 3s stable).**
+- **Mains is sensed by an optocoupler on GPIO 13 / D13 (active-LOW, 3s stable).**
   Never detect mains via network reachability — v1's TCP probe of the extender
   was the root cause of constant fake powercut alerts.
 - ESP32 is the autonomy authority (countdowns, shutdown, WOL); the Pi is control

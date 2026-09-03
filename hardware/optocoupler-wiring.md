@@ -6,7 +6,7 @@
 ## Locked design (never wire mains directly)
 
 - 5V USB wall adapter (mains-powered) → PC817 LED side via series resistor
-- Collector → GPIO 27 on the ESP32, configured `INPUT_PULLUP`
+- Collector → GPIO 13 (D13) on the ESP32, configured `INPUT_PULLUP`
 - Emitter → GND
 - Adapter ON (mains present) → GPIO LOW; adapter OFF → GPIO HIGH
 - Firmware 3s stability rule absorbs adapter sag on short blips

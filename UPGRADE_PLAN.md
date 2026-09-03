@@ -113,7 +113,7 @@ ups-system/
 > PlatformIO project. Everything on this phase is testable on the bench **before** the optocoupler arrives: mains input is a GPIO that we drive with a jumper wire / pushbutton.
 
 ### 1.1 Inputs
-- [ ] GPIO input (e.g. GPIO 27, `INPUT_PULLUP`, optocoupler pulls LOW when mains present) with 500ms hardware-ish debounce + **3s stability rule**: 3s low = mains down, 3s high = mains up
+- [ ] GPIO input on **GPIO 13 (D13)** (changed from D27 — chosen because 13 is not a boot-strap pin, so optocoupler state at reset can't affect boot mode), `INPUT_PULLUP`, optocoupler pulls LOW when mains present, with 500ms hardware-ish debounce + **3s stability rule**: 3s low = mains down, 3s high = mains up
 - [ ] WAN check: TCP `8.8.8.8:53` / `1.1.1.1:53` (2s budget, any success = up), every 15s
 - [ ] No reference to 192.168.0.2 anywhere — the extender is dead to us
 
@@ -157,7 +157,7 @@ ups-system/
 
 ## Phase 3 — Optocoupler Hardware Bring-Up ⏸ (part on order)
 
-> 5V USB wall adapter (mains-powered) → PC817 LED side via series resistor; collector → GPIO 27 (`INPUT_PULLUP`), emitter → GND. **Mains isolation via the adapter — never wire mains directly.** Full schematic in `hardware/optocoupler-wiring.md` when the part lands.
+> 5V USB wall adapter (mains-powered) → PC817 LED side via series resistor; collector → GPIO 13 / D13 (`INPUT_PULLUP`), emitter → GND. **Mains isolation via the adapter — never wire mains directly.** Full schematic in `hardware/optocoupler-wiring.md` when the part lands.
 
 - [ ] Bench wire-up + multimeter verify: idle HIGH, adapter-on LOW
 - [ ] Firmware `mainsSource: gpio` active; network probe for mains **does not exist**
