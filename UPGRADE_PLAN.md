@@ -185,14 +185,20 @@ ups-system/
 
 ## Phase 5 — Final Validation (fail-drill evening, someone at the breaker)
 
+> **2026-09-03 partial validation (real events, not yet formal drills):**
+> - ✅ Real wall-power outage today: `mains_down` → countdown ran → `mains_restored` fired with downtime → **no false shutdown**. Confirms drill #2 end-to-end.
+> - 🟡 ESP32 hard power-pull (1 min): rebooted clean, NVS `seq` persisted (52), volatile counters reset as designed. Confirms the *reboot* half of drill #8; flags→shutdown→wake completion still unproven.
+> - 🟢 Live countdown card (edit-in-place, adaptive cadence) and live-edit `/status` exercised during the real outage.
+> Remaining items below are formal fail-drills, still to run.
+
 - [ ] 2s mains cut → `blip` info only; no countdown; no shutdown
-- [ ] 30s mains cut → countdown starts; cancels on restore with "restored" + downtime
+- [x] 30s mains cut → countdown starts; cancels on restore with "restored" + downtime — **validated today in a real outage**
 - [ ] 6 min mains cut → countdown → shutdown confirmed (API) → 15s → WOL → Proxmox online confirmed
 - [ ] 6 min mains cut with WiFi-router rebooted mid-way → shutdown webhook retried after reconnect, still fires ≤5 min + reconnect delay
 - [ ] `/on` during active countdown → override message, no shutdown; countdown resumes next outage
 - [ ] `/off` → stays off through any power events; `/on` → wake
 - [ ] WAN pull 11 min → WAN shutdown → restore → WOL; WAN pull 5 min → only info messages
-- [ ] ESP32 power-pull mid-outage → boots with NVS flags → completes shutdown/wake correctly
+- [ ] ESP32 power-pull mid-outage → boots with NVS flags → completes shutdown/wake correctly (reboot + NVS persistence ✅ today; flags→wake still to test)
 - [ ] Pi power-pull mid-outage → ESP32 autonomously completes the cycle (decoupling proof)
 - [ ] Proxmox agent down during shutdown → retry ×6 → honest "webhook failed" alert; wake still armed
 
