@@ -26,8 +26,9 @@ def test_on_off_commands(pm):
 
 def test_mainsdelay_bounds(pm):
     _stub_esp_command(pm, ok=True)
-    assert "Set" in pm.handle_command("/mainsdelay", "1")
-    assert "Set" in pm.handle_command("/mainsdelay", "720")
+    # valid: waiting message sent, no plain-text reply
+    assert pm.handle_command("/mainsdelay", "1") is None
+    assert pm.handle_command("/mainsdelay", "720") is None
     assert "range" in pm.handle_command("/mainsdelay", "0")
     assert "range" in pm.handle_command("/mainsdelay", "721")
     assert "number" in pm.handle_command("/mainsdelay", "abc")
@@ -35,14 +36,13 @@ def test_mainsdelay_bounds(pm):
 
 def test_mainsdelay_reset(pm):
     _stub_esp_command(pm, ok=True)
-    reply = pm.handle_command("/mainsdelay", "reset")
-    assert "Set" in reply
+    assert pm.handle_command("/mainsdelay", "reset") is None
 
 
 def test_wantimeout_bounds(pm):
     _stub_esp_command(pm, ok=True)
-    assert "Set" in pm.handle_command("/wantimeout", "5")
-    assert "Set" in pm.handle_command("/wantimeout", "120")
+    assert pm.handle_command("/wantimeout", "5") is None
+    assert pm.handle_command("/wantimeout", "120") is None
     assert "range" in pm.handle_command("/wantimeout", "4")
     assert "range" in pm.handle_command("/wantimeout", "121")
     assert "number" in pm.handle_command("/wantimeout", "abc")
@@ -50,8 +50,29 @@ def test_wantimeout_bounds(pm):
 
 def test_wantimeout_reset(pm):
     _stub_esp_command(pm, ok=True)
-    reply = pm.handle_command("/wantimeout", "reset")
-    assert "Set" in reply
+    assert pm.handle_command("/wantimeout", "reset") is None
+
+
+def test_delay_set_edits_waiting_message_on_confirm(pm):
+    _stub_esp_command(pm, ok=True)
+    # user sends /mainsdelay 12 -> a "waiting" message is sent, pending tracked
+    assert pm.handle_command("/mainsdelay", "12") is None
+    with pm._pending_conf_lock:
+        conf = pm._pending_conf.get("mainsdelay")
+    assert conf, "pending confirmation not registered"
+    # ESP confirms via its ledger event -> the SAME message gets edited
+    pm.process_event("mains_delay_set", 50, {"event": "mains_delay_set", "data": "12min"})
+    edits = [c for c in pm._tg_edit_msg_calls if c[0] == "edit"]
+    assert edits, "expected the waiting message to be edited"
+    assert "12 min" in edits[-1][2]
+    with pm._pending_conf_lock:
+        assert "mainsdelay" not in pm._pending_conf, "pending not cleared after confirm"
+
+
+def test_delay_set_without_pending_falls_through_to_summary(pm):
+    # no pending command — the event is a normal info summary
+    pm.process_event("mains_delay_set", 50, {"event": "mains_delay_set", "data": "12min"})
+    assert pm._tg_edit_msg_calls == [], "should not edit without a pending message"
 
 
 def test_status_and_diag_return_strings(pm):

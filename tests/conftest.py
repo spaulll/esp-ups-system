@@ -67,6 +67,11 @@ def pm():
 
     mod._tg_send = _tg_send
     mod._ntfy_send = _ntfy_send
+    # stub the live-edit message helpers so tests don't touch Telegram
+    mod._tg_send_msg_calls = []
+    mod._tg_send_msg = lambda text: (mod._tg_send_msg_calls.append(("send", text)) or 42)
+    mod._tg_edit_msg_calls = []
+    mod._tg_edit_msg = lambda mid, text: (mod._tg_edit_msg_calls.append(("edit", mid, text)) or True)
 
     mod.STATE_DIR = tempfile.mkdtemp(prefix="ups-test-")
     mod.SEQ_FILE = os.path.join(mod.STATE_DIR, "last-seq.json")
@@ -90,11 +95,13 @@ def _clean(pm):
     pm._esp32_state.clear()
     pm._last_seq = 0
     pm._sensor_dead_since = None
+    pm._tg_send_msg_calls.clear()
+    pm._tg_edit_msg_calls.clear()
     with pm._notify_lock:
         pm._notify_queue.clear()
         pm._info_pending = None
-    pm._esp_state_orig = getattr(pm, "_esp_state_orig", None)
-    pm._esp_events_orig = getattr(pm, "_esp_events_orig", None)
+    with pm._pending_conf_lock:
+        pm._pending_conf.clear()
     yield
 
 

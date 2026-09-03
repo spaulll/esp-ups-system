@@ -96,6 +96,10 @@ _cd_last_sent = 0.0         # last time we pushed a live countdown card
 _cd_sent_count = 0          # cards sent this outage (rate-limit cap)
 _esp_state_ts = 0.0         # wall-clock when _esp32_state was last refreshed
 
+# pending live-command confirmations: cmd -> {"message_id","mins","sent"}
+_pending_conf = {}
+_pending_conf_lock = threading.Lock()
+
 # ===================== FILE PERSISTENCE =====================
 def _load_json(path, default):
     try:
@@ -441,6 +445,37 @@ def _tg_send(text):
         log.warning(f"telegram send failed: {e}")
         return False
 
+
+def _tg_send_msg(text):
+    """Send a message and return its message_id, or None on failure."""
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+    data = json.dumps({"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"}).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with _tg_opener().open(req, timeout=TG_POLL_TIMEOUT + 5) as r:
+            res = json.loads(r.read().decode())
+            if res.get("ok"):
+                return res.get("result", {}).get("message_id")
+    except Exception as e:
+        log.warning(f"telegram send failed: {e}")
+    return None
+
+
+def _tg_edit_msg(message_id, text):
+    """Edit an existing bot message in place. Returns True on success."""
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/editMessageText"
+    data = json.dumps({
+        "chat_id": TG_CHAT_ID, "message_id": message_id,
+        "text": text, "parse_mode": "HTML",
+    }).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with _tg_opener().open(req, timeout=TG_POLL_TIMEOUT + 5) as r:
+            return json.loads(r.read().decode()).get("ok", False)
+    except Exception as e:
+        log.warning(f"telegram edit failed: {e}")
+        return False
+
 def _strip_html(text):
     text = re.sub(r"</?(b|i|u|s|code|pre|a)[^>]*>", "", text)
     return html.unescape(text)
@@ -523,11 +558,35 @@ def _handle_info(text):
 # ===================== RECONCILER =====================
 _reconcile_lock = threading.Lock()
 
+# events that confirm a live "waiting" command message (edited in place)
+CONFIRM_EVENTS = {"mains_delay_set": "mainsdelay", "wan_timeout_set": "wantimeout"}
+
+
+def _maybe_confirm_pending(evt, data):
+    """If a delay-set command is pending confirmation, edit its live message."""
+    cmd = CONFIRM_EVENTS.get(evt)
+    if not cmd:
+        return False
+    with _pending_conf_lock:
+        conf = _pending_conf.pop(cmd, None)
+    if not conf:
+        return False
+    ok = _tg_edit_msg(conf["message_id"],
+                      f"✅ {conf['label'].capitalize()} delay confirmed: <b>{conf['human']}</b>")
+    if ok:
+        log.info(f"confirmed {cmd} -> {conf['human']} (edited live message)")
+    return ok
+
+
 def process_event(evt, seq, data):
     global _last_seq
     taxonomy = EVENT_TAXONOMY.get(evt)
     if not taxonomy:
         log.warning(f"unknown event {evt} (seq={seq})")
+        return
+    # Delay-set confirmations edit the "waiting" message instead of being
+    # batched into the slow info summary — no 1.5-min gap for command users.
+    if _maybe_confirm_pending(evt, data):
         return
     klass, fmt = taxonomy
     if evt == "mains_down":
@@ -748,8 +807,19 @@ def cmd_set_delay(cmd, mins_str):
     lo, hi = (1, 720) if cmd == "mainsdelay" else (5, 120)
     if not (lo <= mins <= hi):
         return f"❌ {cmd} range is {lo}–{hi}."
-    ok = _esp_command({"cmd": cmd, "minutes": mins})
-    return "✅ Set." if ok else "❌ ESP32 unreachable."
+    if not _esp_command({"cmd": cmd, "minutes": mins}):
+        return "❌ ESP32 unreachable."
+    # Reply with a live "waiting" message; it gets EDITED in place once the
+    # ESP confirms via its event ledger (see _maybe_confirm_pending_set).
+    label = "power" if cmd == "mainsdelay" else "internet"
+    human = f"{mins} min"
+    sent_id = _tg_send_msg(f"⏳ Setting {label} delay to <b>{human}</b>… waiting for confirmation")
+    if sent_id is not None:
+        with _pending_conf_lock:
+            _pending_conf[cmd] = {"message_id": sent_id, "label": label,
+                                  "human": human, "mins": mins, "sent": time.time()}
+        return None   # no extra reply — the live message is the confirmation
+    return "✅ Command sent."
 
 def _tg_get(path, params):
     """GET a Telegram API path with optional SOCKS proxy."""
@@ -840,6 +910,7 @@ def countdown_updater():
     global _cd_last_sent
     log.info("countdown updater started")
     while True:
+        _expire_pending_confirmations()
         card = _build_countdown_card()
         now = time.time()
         if card:
@@ -852,6 +923,21 @@ def countdown_updater():
                 _deliver(card, urgent=False)
                 _cd_last_sent = now
         time.sleep(2)
+
+
+def _expire_pending_confirmations():
+    """Flip stale 'waiting…' command messages to failed after 90s."""
+    now = time.time()
+    stale = []
+    with _pending_conf_lock:
+        for cmd, conf in list(_pending_conf.items()):
+            if now - conf.get("sent", 0) > 90:
+                stale.append((cmd, conf))
+                _pending_conf.pop(cmd, None)
+    for cmd, conf in stale:
+        _tg_edit_msg(conf["message_id"],
+                     f"❌ {conf['label'].capitalize()} delay not confirmed — ESP unreachable? "
+                     f"Use /diag to check.")
 
 
 # ===================== MAIN =====================
