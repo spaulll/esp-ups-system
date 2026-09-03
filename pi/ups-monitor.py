@@ -143,6 +143,7 @@ def _load_counters():
         _daily_counters = {"date": _today(), "mains_down": 0, "shutdowns": 0, "blips": 0}
 
 def _bump_counter(key):
+    global _daily_counters
     with _lock:
         if _daily_counters.get("date") != _today():
             _daily_counters = {"date": _today(), "mains_down": 0, "shutdowns": 0, "blips": 0}
@@ -366,6 +367,7 @@ def _deliver(text, urgent):
     return ok
 
 def _notify_worker():
+    global _info_pending
     while True:
         _wake_event.wait(2)
         _wake_event.clear()
@@ -395,6 +397,7 @@ def _notify_worker():
             _deliver(summary, urgent=False)
 
 def _handle_info(text):
+    global _info_pending
     now = time.time()
     with _notify_lock:
         if _info_pending is None:
@@ -425,7 +428,7 @@ def process_event(evt, seq, data):
         pve_verify(expect_up=True, label=evt)
 
 def reconcile_once():
-    global _last_seq
+    global _last_seq, _sensor_dead_since
     with _reconcile_lock:
         state = _esp_state()
         if state is not None:
