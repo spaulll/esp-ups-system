@@ -328,8 +328,12 @@ def _tg_send(text):
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     data = json.dumps({"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"}).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-    with _tg_opener().open(req, timeout=TG_POLL_TIMEOUT + 5) as r:
-        return json.loads(r.read().decode()).get("ok", False)
+    try:
+        with _tg_opener().open(req, timeout=TG_POLL_TIMEOUT + 5) as r:
+            return json.loads(r.read().decode()).get("ok", False)
+    except Exception as e:
+        log.warning(f"telegram send failed: {e}")
+        return False
 
 def _strip_html(text):
     text = re.sub(r"</?(b|i|u|s|code|pre|a)[^>]*>", "", text)
@@ -357,8 +361,11 @@ def _ntfy_send(text, urgent=False):
     return False
 
 def _deliver(text, urgent):
-    if _tg_send(text):
-        return True
+    try:
+        if _tg_send(text):
+            return True
+    except Exception as e:
+        log.warning(f"telegram send raised: {e}")
     log.warning("Telegram delivery failed — falling back to ntfy")
     ok = _ntfy_send(text, urgent=urgent)
     if not ok:

@@ -174,10 +174,10 @@ ups-system/
 
 ## Phase 4 — UX Polish + Observability
 
-- [ ] `/diag` v2: GPIO state + last change age, WiFi state, reset reason, ledger seq/gaps, counters, delay settings, WOL attempt stats
-- [ ] Message taxonomy (Appendix A) enforced from a single severity table — TG formatting and ntfy priority derived from it
-- [ ] pytest in `tests/`: event classification, coalescer, reconciler seq logic, command parsing (no hardware needed, runs in builder LXC / CI)
-- [ ] Daily counters survive Pi restarts (already file-backed) and date-rollover correctly
+- [x] Message taxonomy (Appendix A) enforced from a single severity table — TG formatting and ntfy priority derived from it (`EVENT_TAXONOMY` in `pi/ups-monitor.py`, verified by pytest)
+- [x] pytest in `tests/`: event classification, coalescer, reconciler seq logic, command parsing (no hardware needed, runs in builder LXC / CI) — 24 tests green
+- [x] Daily counters survive Pi restarts (already file-backed) and date-rollover correctly (`_load_counters`/`_bump_counter` reset-on-rollover, pytest-covered)
+- [ ] `/diag` v2 remaining: GPIO last-change age + WOL attempt stats (firmware `mainsStableSinceMs` field + expose WOL stats — small Phase-5-prep addition, not blocking)
 
 **Phase 4 acceptance:** every drill scenario in §5 maps 1:1 to a documented, bounded message set.
 
