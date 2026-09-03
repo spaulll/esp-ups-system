@@ -103,7 +103,7 @@ def stub_esp(pm, state=None, events=None):
     pm._esp_state_orig = pm._esp_state
     pm._esp_events_orig = pm._esp_events
     pm._esp_state = (lambda: state) if state is not None else (lambda: None)
-    pm._esp_events = lambda since: events if events is not None else []
+    pm._esp_events = (lambda since: [e for e in (events or []) if e.get("seq", 0) > since])
 
 
 @pytest.fixture

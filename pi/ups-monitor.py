@@ -279,28 +279,129 @@ def _esp_command(cmd_dict):
 
 # ===================== EVENT TAXONOMY (single authority) =====================
 # class: critical -> immediate; warning -> immediate; info -> coalesce
+# style: emoji-first severity, bold title, plain-language body (no internal
+# field names), optional actionable hint. Same text flows to ntfy (stripped).
 EVENT_TAXONOMY = {
-    "esp_booted":            ("info",      lambda d: f"🟢 <b>ESP32 Online</b>\n\nBoot reason: {d.get('data') or 'unknown'}"),
-    "mains_blip":            ("info",      lambda d: f"⚡ <b>Mains Blip</b>\n\nBrief dip ({d.get('data') or '1x'}), no action."),
-    "mains_down":            ("critical",  lambda d: f"🔴 <b>Mains Down</b>\n\nGPIO confirms mains lost. Shutdown in {d.get('data') or '5'} if not restored."),
-    "mains_restored":        ("critical",  lambda d: f"✅ <b>Mains Restored</b>\n\nPower returned. Downtime: {fmt_downtime(int(d.get('data','0').split('=')[-1])//1000)}"),
-    "shutdown_mains_start":  ("critical",  lambda d: "🔴 <b>Shutting Down — Mains Timeout</b>\n\nMains down past delay. Sending shutdown webhook."),
-    "shutdown_wan_start":    ("critical",  lambda d: "🔴 <b>Shutting Down — WAN Timeout</b>\n\nNo internet past timeout. Sending shutdown webhook."),
-    "shutdown_manual_start": ("critical",  lambda d: "🔴 <b>Shutting Down — Manual</b>\n\n/off received."),
-    "shutdown_webhook_ok":   ("info",      lambda d: "✅ Shutdown webhook acknowledged by node."),
-    "shutdown_webhook_failed":("warning",  lambda d: f"⚠️ <b>Shutdown Webhook Failed</b>\n\nAttempt {d.get('data') or '?'} — retrying."),
-    "shutdown_complete":     ("critical",  lambda d: "✅ <b>Shutdown Complete</b>\n\nNode confirmed off."),
-    "webhook_gave_up":       ("critical",  lambda d: "🚨 <b>Shutdown Webhook Gave Up</b>\n\nNode did not ack after 6 tries. Flag stays set; wake logic armed."),
-    "wake_sequence_start":   ("critical",  lambda d: "🟡 <b>Wake Sequence</b>\n\nRestore detected — 15s settle then WOL."),
-    "wol_rexmitted":         ("warning",   lambda d: f"📡 <b>WOL Re-sent</b>\n\nProxmox not up yet ({d.get('data') or 'n/5'})."),
-    "wake_failed":           ("critical",  lambda d: "🚨 <b>Wake Failed</b>\n\n5 WOL attempts exhausted. Manual intervention needed."),
-    "online_confirmed":      ("critical",  lambda d: "✅ <b>Proxmox Online Confirmed</b>\n\nNode is back after power event."),
-    "manual_on":             ("info",      lambda d: "✅ <b>Manual On</b>\n\nWake commanded."),
-    "manual_override":       ("warning",   lambda d: "⚠️ <b>Manual Override</b>\n\nAuto-shutdown suppressed by /on."),
-    "gpio_test":             ("info",      lambda d: f"🧪 GPIO test: {d.get('data') or '?'}"),
-    "mains_delay_set":       ("info",      lambda d: f"⏱️ Mains delay set to {d.get('data') or '?'}."),
-    "wan_timeout_set":       ("info",      lambda d: f"⏱️ WAN timeout set to {d.get('data') or '?'}."),
+    "esp_booted": (
+        "info",
+        lambda d: "🟢 <b>Sensor Online</b>\n\nUPS monitor started and is watching power now."
+                  + (f"\nReason: {_plain_reset(d.get('data') or 'unknown')}" if d.get('data') else "")),
+    "mains_blip": (
+        "info",
+        lambda d: "⚡ <b>Power Blip</b>\n\nA brief power dip was detected"
+                  + (f" ({_parse_blip(d.get('data'))})" if d.get('data') else "")
+                  + ". No action needed — power recovered on its own."),
+    "mains_down": (
+        "critical",
+        lambda d: "🔴 <b>Utility Power Lost</b>\n\nThe server will shut down in "
+                  + (_parse_mins(d.get('data')) if d.get('data') else "a few minutes")
+                  + " if power doesn't return.\n\nTap /status to watch the countdown."),
+    "mains_restored": (
+        "critical",
+        lambda d: "🟢 <b>Power Restored</b>\n\nUtility power is back."
+                  + (f" It was out for {fmt_downtime(int(d.get('data','0').split('=')[-1])//1000)}." if d.get('data') else "")
+                  + "\nMonitoring back to normal."),
+    "shutdown_mains_start": (
+        "critical",
+        lambda d: "🔴 <b>Shutting Down — Power Timeout</b>\n\nPower has been out past the limit."
+                  + " Sending shutdown to the server now."),
+    "shutdown_wan_start": (
+        "critical",
+        lambda d: "🔴 <b>Shutting Down — No Internet</b>\n\nInternet has been down past the limit."
+                  + " Sending shutdown to the server now."),
+    "shutdown_manual_start": (
+        "critical",
+        lambda d: "🔴 <b>Shutting Down — Manual</b>\n\nYou asked for shutdown. Server going down now.\n\nUse /on to wake it later."),
+    "shutdown_webhook_ok": (
+        "info",
+        lambda d: "✅ Shutdown request accepted by the server."),
+    "shutdown_webhook_failed": (
+        "warning",
+        lambda d: "⚠️ <b>Shutdown Not Acknowledged</b>\n\nServer didn't answer"
+                  + (f" (attempt {d.get('data') or '?'})" if d.get('data') else "")
+                  + " — retrying."),
+    "shutdown_complete": (
+        "critical",
+        lambda d: "✅ <b>Server Shut Down</b>\n\nThe server confirmed it is off."),
+    "webhook_gave_up": (
+        "critical",
+        lambda d: "🚨 <b>Shutdown Couldn't Be Confirmed</b>\n\n"
+                  + "The server never acknowledged after 6 tries. It may already be off,"
+                  + " or the shutdown service is down. The wake-up logic stays armed."),
+    "wake_sequence_start": (
+        "critical",
+        lambda d: "🟡 <b>Waking the Server</b>\n\nPower is back. Waiting a few seconds,"
+                  + " then sending the wake-up signal."),
+    "wol_rexmitted": (
+        "warning",
+        lambda d: "📡 <b>Wake Signal Re-sent</b>\n\nServer hasn't come up yet"
+                  + (f" ({d.get('data') or 'retrying'})." if d.get('data') else ".")
+                  + " Still trying."),
+    "wake_failed": (
+        "critical",
+        lambda d: "🚨 <b>Server Didn't Wake</b>\n\nAfter 5 wake attempts the server is still off."
+                  + " It needs manual attention.\n\nTry /on once it has power."),
+    "online_confirmed": (
+        "critical",
+        lambda d: "✅ <b>Server Is Back Online</b>\n\nThe server is up after the power event."),
+    "manual_on": (
+        "info",
+        lambda d: "✅ <b>Manual Wake</b>\n\nWake-up signal sent as you asked."),
+    "manual_override": (
+        "warning",
+        lambda d: "⚠️ <b>Auto-Shutdown Disabled</b>\n\nYou pressed /on during the outage, so"
+                  + " the automatic shutdown is suspended. Use /off if you want it down."),
+    "gpio_test": (
+        "info",
+        lambda d: "🧪 <b>Bench Test</b>\n\nMains input test applied: "
+                  + (_parse_gpio_test(d.get('data')) if d.get('data') else "value set") + "."),
+    "mains_delay_set": (
+        "info",
+        lambda d: "⏱️ <b>Power Delay Updated</b>\n\nAuto-shutdown now waits "
+                  + (_parse_mins(d.get('data')) if d.get('data') else "the new delay")
+                  + " after power loss."),
+    "wan_timeout_set": (
+        "info",
+        lambda d: "⏱️ <b>Internet Delay Updated</b>\n\nShutdown after internet loss now waits "
+                  + (_parse_mins(d.get('data')) if d.get('data') else "the new delay") + "."),
 }
+
+
+def _plain_reset(reason):
+    """Map firmware reset-reason strings to plain words."""
+    return {
+        "poweron": "power-on", "software": "software restart", "panic": "a crash",
+        "int_wdt": "a watchdog timer", "task_wdt": "a watchdog timer", "wdt": "a watchdog timer",
+        "deepsleep": "deep sleep", "brownout": "a power dip", "sdio": "SDIO",
+    }.get(str(reason).strip(), str(reason))
+
+
+def _parse_mins(data):
+    """'mins=18' -> '18 minutes'."""
+    try:
+        n = int(str(data).split("=")[-1].strip())
+        return f"{n} minute{'s' if n != 1 else ''}"
+    except (TypeError, ValueError):
+        return str(data)
+
+
+def _parse_blip(data):
+    """'2x' -> '2 times'."""
+    try:
+        n = int(str(data).rstrip("x"))
+        return f"{n} time{'s' if n != 1 else ''}"
+    except (TypeError, ValueError):
+        return str(data)
+
+
+def _parse_gpio_test(data):
+    """'value=1' -> 'simulated power loss' (1) / 'normal' (0) / 'real input' (-1)."""
+    try:
+        v = int(str(data).split("=")[-1].strip())
+        return {1: "simulated power loss", 0: "simulated power present",
+                -1: "real input restored"}.get(v, f"value {v}")
+    except (TypeError, ValueError):
+        return str(data)
 
 # events that also trigger PVE verification
 VERIFY_OFFLINE = {"shutdown_mains_start", "shutdown_wan_start", "shutdown_manual_start"}
@@ -516,6 +617,28 @@ def webhook_server():
     srv.serve_forever()
 
 # ===================== TELEGRAM COMMANDS =====================
+TG_COMMANDS = [
+    {"command": "status", "description": "Live power & server status"},
+    {"command": "diag", "description": "Technical diagnostics"},
+    {"command": "on", "description": "Wake the server"},
+    {"command": "off", "description": "Shut the server down"},
+    {"command": "mainsdelay", "description": "Set power-loss shutdown delay (1-720 min)"},
+    {"command": "wantimeout", "description": "Set internet-loss shutdown delay (5-120 min)"},
+]
+
+
+def register_commands():
+    """Register the bot command menu with Telegram (so '/' shows the list)."""
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/setMyCommands"
+    data = json.dumps({"commands": TG_COMMANDS}).encode()
+    req = urllib.request.Request(url, data=data,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with _tg_opener().open(req, timeout=TG_POLL_TIMEOUT + 5) as r:
+            return json.loads(r.read().decode()).get("ok", False)
+    except Exception as e:
+        log.warning(f"register commands failed: {e}")
+        return False
 def _send_esp(cmd, extra=None):
     d = {"cmd": cmd}
     if extra: d.update(extra)
@@ -526,59 +649,88 @@ def _bar(frac, width=10):
     filled = round(frac * width)
     return "▰" * filled + "▱" * (width - filled)
 
+
+def mains_down_notified():
+    with _lock:
+        return bool(_esp32_state.get("mainsFailSinceMs", 0))
+
 def cmd_status():
     with _lock:
         s = dict(_esp32_state)
+        counters = dict(_daily_counters)
     prox_online, _, prox_up = _pve_probe()
-    header = f"⚡ <b>UPS STATUS</b>  <i>{time.strftime('%H:%M:%S')}</i>\n" + "─" * 20
+    header = f"⚡ <b>UPS Monitor</b> · <i>{time.strftime('%H:%M:%S')}</i>\n────"
+
     if not s:
-        return header + "\n\n⚠️ Sensor data unavailable."
+        return header + "\n\n⚠️ <b>Sensor offline</b>\n\nNo live data available right now."
     mains = s.get("mainsUp", False)
     wan = s.get("wanUp", False)
     lines = [header]
-    lines.append(f"{'🟢' if mains else '🔴'} <b>Mains</b>   <code>{'UP' if mains else 'DOWN'}</code>")
-    lines.append(f"{'🟢' if wan else '🔴'} <b>WAN</b>     <code>{'UP' if wan else 'DOWN'}</code>")
-    lines.append(f"{'🟢' if prox_online else '🔴'} <b>Proxmox</b> <code>{prox_up}</code>")
+    lines.append(f"{'🟢' if mains else '🔴'} <b>Mains</b>       <code>{'UP' if mains else 'DOWN'}</code>")
+    lines.append(f"{'🟢' if wan else '🔴'} <b>WAN</b>         <code>{'UP' if wan else 'DOWN'}</code>")
+    lines.append(f"{'🟢' if prox_online else '🔴'} <b>Proxmox</b>     <code>{'ONLINE' if prox_online else 'OFFLINE'}</code>"
+                 + (f" · {prox_up}" if prox_online else ""))
+
     mfail = s.get("mainsFailSinceMs", 0)
-    wfail = s.get("wanFailSinceMs", 0)
     mdelay = s.get("mainsDelayMs", 300000)
-    if mfail:
-        frac = mfail / max(mdelay, 1)
-        lines.append(f"⏳ Mains countdown {_bar(frac)} ({fmt_downtime((mdelay - mfail)/1000)} left)")
-    if wfail:
-        wto = s.get("wanTimeoutMs", 600000)
-        frac = wfail / max(wto, 1)
-        lines.append(f"⏳ WAN countdown  {_bar(frac)}")
-    flags = []
-    for k, label in (("sdMains", "sdMains"), ("sdWAN", "sdWAN"), ("sdManual", "sdManual")):
-        if s.get(k): flags.append(label)
-    if flags:
-        lines.append("🚩 Flags: " + ", ".join(flags))
+    if mains_down_notified():
+        down_s = int(mfail // 1000)
+        remain = max(0, (mdelay - mfail) // 1000)
+        lines.append("")
+        lines.append(f"⏳ <b>Power down for {fmt_downtime(down_s)}</b>")
+        lines.append(f"    Auto-shutdown in <b>{fmt_downtime(remain)}</b>")
+        lines.append(f"    <code>{_bar((mdelay - mfail) / mdelay)}</code>")
+    if s.get("sdMains") or s.get("sdWAN") or s.get("sdManual"):
+        reason = "manual /off"
+        if s.get("sdMains") and s.get("sdWAN"): reason = "power + internet loss"
+        elif s.get("sdMains"): reason = "power loss"
+        elif s.get("sdWAN"): reason = "internet loss"
+        lines.append("")
+        lines.append(f"🛡 <b>Server down</b> · {reason}")
     lines.append("")
-    lines.append(f"📅 Today: mains↓ {_daily_counters.get('mains_down',0)} · shutdowns {_daily_counters.get('shutdowns',0)} · blips {_daily_counters.get('blips',0)}")
+    lines.append(f"📊 Today: {counters.get('mains_down',0)}× power loss · "
+                 f"{counters.get('shutdowns',0)}× shutdown · {counters.get('blips',0)}× blips")
     return "\n".join(lines)
+
 
 def cmd_diag():
     with _lock:
         s = dict(_esp32_state)
+        counters = dict(_daily_counters)
     prox_online, _, prox_up = _pve_probe()
-    lines = ["🔧 <b>DIAG</b>\n" + "─" * 20]
+    header = f"🔧 <b>Diagnostics</b> · <i>{time.strftime('%H:%M:%S')}</i>\n────"
+    lines = [header]
     if not s:
-        lines.append("⚠️ No sensor data.")
+        lines.append("\n⚠️ <b>Sensor offline</b>\n\nNo live data available right now.")
     else:
-        lines.append(f"Firmware:  <code>{s.get('fw')}</code>")
-        lines.append(f"Uptime:    {fmt_downtime(s.get('espUptimeMs',0)/1000)}")
-        lines.append(f"Reset:     <code>{s.get('espResetReason')}</code>")
-        lines.append(f"Heap:      {s.get('freeHeap')} B")
-        lines.append(f"RSSI:      <code>{s.get('rssi')}</code> dBm")
-        lines.append(f"mainsRaw:  <code>{s.get('mainsRaw')}</code> · mainsUp {s.get('mainsUp')}")
-        lines.append(f"wanUp:     {s.get('wanUp')}")
-        lines.append(f"MainsDelay: <code>{s.get('mainsDelayMs',0)//60000}</code> min · WAN timeout <code>{s.get('wanTimeoutMs',0)//60000}</code> min")
-        lines.append(f"LEDGER seq: <code>{s.get('seq')}</code> · last processed <code>{_last_seq}</code>")
-        lines.append(f"Flags: sdMains={s.get('sdMains')} sdWAN={s.get('sdWAN')} sdManual={s.get('sdManual')} override={s.get('manualOverride')}")
-        c = s.get("counters", {})
-        lines.append(f"Counters: {c}")
-    lines.append(f"Proxmox:  <code>{prox_up}</code>")
+        lines.append(f"🧩 <b>Sensor firmware</b>   {s.get('fw', '?')}")
+        lines.append(f"⏱ <b>Sensor uptime</b>     {fmt_downtime(s.get('espUptimeMs',0)//1000)}")
+        lines.append(f"🔄 <b>Last reset</b>       {_plain_reset(s.get('espResetReason','unknown'))}")
+        rssi = s.get('rssi')
+        lines.append(f"📶 <b>WiFi signal</b>      {rssi} dBm" if isinstance(rssi,(int,float)) else "📶 <b>WiFi signal</b>  —")
+        mains = s.get("mainsUp", False)
+        stable_ms = s.get("mainsStableSinceMs", -1)
+        age = fmt_downtime(stable_ms//1000) if isinstance(stable_ms,(int,float)) and stable_ms >= 0 else "unknown"
+        lines.append(f"{'🟢' if mains else '🔴'} <b>Mains</b>            <code>{'UP' if mains else 'DOWN'}</code> · last change {age}")
+        lines.append(f"{'🟢' if s.get('wanUp') else '🔴'} <b>WAN</b>              <code>{'UP' if s.get('wanUp') else 'DOWN'}</code>")
+        lines.append(f"{'🟢' if prox_online else '🔴'} <b>Proxmox</b>          <code>{'ONLINE' if prox_online else 'OFFLINE'}</code>"
+                     + (f" · {prox_up}" if prox_online else ""))
+        lines.append("")
+        lines.append(f"⏱ <b>Shutdown delays</b>  mains {s.get('mainsDelayMs',300000)//60000}m · "
+                     f"wan {s.get('wanTimeoutMs',600000)//60000}m")
+        flags = []
+        if s.get("sdMains"): flags.append("sdMains")
+        if s.get("sdWAN"): flags.append("sdWAN")
+        if s.get("sdManual"): flags.append("sdManual")
+        if s.get("manualOverride"): flags.append("manualOverride")
+        lines.append(f"🚩 <b>Flags</b>            {', '.join(flags) if flags else 'none'}")
+        lines.append(f"📊 <b>Today</b>            {counters.get('mains_down',0)}× power loss · "
+                     f"{counters.get('shutdowns',0)}× shutdown · {counters.get('blips',0)}× blips")
+        lines.append(f"🧠 <b>Event ledger</b>     seq {s.get('seq','?')} · last seen {_last_seq}"
+                     + (" · synced" if _last_seq >= int(s.get('seq', _last_seq)) else " · pending"))
+        lines.append(f"📡 <b>Wake attempts</b>   {s.get('wolAttempts',0)} this cycle · "
+                     f"{counters.get('wolRexmit', 0)} re-sends today" if 'wolRexmit' in counters else
+                     f"📡 <b>Wake attempts</b>   {s.get('wolAttempts',0)} this cycle")
     return "\n".join(lines)
 
 def cmd_set_delay(cmd, mins_str):
@@ -647,6 +799,10 @@ def handle_command(cmd, arg):
 
 def telegram_loop():
     log.info("telegram loop started")
+    if register_commands():
+        log.info("bot commands registered with Telegram")
+    else:
+        log.warning("could not register bot commands — menu may be missing")
     _tg_poll()
 
 # ===================== MAIN =====================
