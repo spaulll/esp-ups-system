@@ -43,6 +43,9 @@ command -v sshpass >/dev/null || { echo "sshpass not installed"; exit 1; }
 
 SSH() { sshpass -p "$PASS" ssh "$@"; }
 SCP() { sshpass -p "$PASS" scp "$@"; }
+# sudo over non-interactive SSH: pipe the user password to `sudo -S`.
+# First sudo in each session primes the credential cache for the rest.
+SUDO() { sshpass -p "$PASS" ssh "$PI" "echo '$PASS' | sudo -S $*"; }
 STAMP=$(date +%Y%m%d-%H%M%S)
 TMP=$(mktemp -d /dev/shm/ups-pi-XXXXX); trap 'rm -rf "$TMP"' EXIT
 
@@ -55,9 +58,9 @@ if [ $DRY -eq 1 ]; then
 fi
 
 echo "==> 2. Remote backup"
-SSH "$PI" "sudo mkdir -p /var/backups/ups-monitor/$STAMP && \
-  sudo cp /usr/local/bin/ups-monitor.py /etc/systemd/system/ups-monitor.service \
-          /etc/logrotate.d/ups-monitor /var/backups/ups-monitor/$STAMP/ 2>/dev/null || true"
+SUDO "mkdir -p /var/backups/ups-monitor/$STAMP && \
+  cp /usr/local/bin/ups-monitor.py /etc/systemd/system/ups-monitor.service \
+     /var/backups/ups-monitor/$STAMP/ 2>/dev/null || true"
 
 echo "==> 3. Push code (self-contained) + service + logrotate"
 SCP "$TMP/ups-monitor.py"     "$PI:/tmp/"
@@ -65,11 +68,11 @@ SCP pi/ups-monitor.service    "$PI:/tmp/"
 SCP pi/logrotate-ups-monitor  "$PI:/tmp/"
 
 echo "==> 4. Install + restart + verify"
-SSH "$PI" "sudo mv /tmp/ups-monitor.py /usr/local/bin/ups-monitor.py && \
-  sudo chmod 755 /usr/local/bin/ups-monitor.py && \
-  sudo mv /tmp/ups-monitor.service /etc/systemd/system/ups-monitor.service && \
-  sudo mv /tmp/logrotate-ups-monitor /etc/logrotate.d/ups-monitor && \
-  sudo systemctl daemon-reload && sudo systemctl restart ups-monitor && sleep 5 && \
-  systemctl is-active ups-monitor && sudo journalctl -u ups-monitor -n 10 --no-pager"
+SUDO "mv /tmp/ups-monitor.py /usr/local/bin/ups-monitor.py && \
+  chmod 755 /usr/local/bin/ups-monitor.py && \
+  mv /tmp/ups-monitor.service /etc/systemd/system/ups-monitor.service && \
+  mv /tmp/logrotate-ups-monitor /etc/logrotate.d/ups-monitor && \
+  systemctl daemon-reload && systemctl restart ups-monitor && sleep 5 && \
+  systemctl is-active ups-monitor && journalctl -u ups-monitor -n 10 --no-pager"
 
 echo "Deploy OK — /status from Telegram is the human check."
