@@ -897,6 +897,33 @@ def _tg_poll():
             log.warning(f"tg poll error: {e}")
             time.sleep(3)
 
+def _esp_snapshot():
+    with _lock:
+        return dict(_esp32_state)
+
+
+def cmd_on():
+    """Handle /on — wake only if the node is down or a countdown is active."""
+    s = _esp_snapshot()
+    if not s:
+        return "✅ Wake commanded." if _send_esp("wake") else "❌ ESP32 unreachable."
+    down = s.get("sdMains") or s.get("sdWAN") or s.get("sdManual")
+    counting = (s.get("mainsFailSinceMs", 0) or 0) > 0 or (s.get("wanFailSinceMs", 0) or 0) > 0
+    if down or (counting and not s.get("manualOverride")):
+        ok = _send_esp("wake")
+        return "✅ Wake commanded." if ok else "❌ ESP32 unreachable."
+    return "ℹ️ Server is already up — nothing to wake."
+
+
+def cmd_off():
+    """Handle /off — shutdown only if the node is not already down."""
+    s = _esp_snapshot()
+    if s and (s.get("sdMains") or s.get("sdWAN") or s.get("sdManual")):
+        return "ℹ️ Server is already down."
+    ok = _send_esp("shutdown")
+    return "✅ Shutdown commanded." if ok else "❌ ESP32 unreachable."
+
+
 def handle_command(cmd, arg):
     global _status_msg_id, _status_last_sent
     if cmd == "/status":
@@ -913,11 +940,9 @@ def handle_command(cmd, arg):
     if cmd == "/diag":
         return cmd_diag()
     if cmd == "/on":
-        ok = _send_esp("wake")
-        return "✅ Wake commanded." if ok else "❌ ESP32 unreachable."
+        return cmd_on()
     if cmd == "/off":
-        ok = _send_esp("shutdown")
-        return "✅ Shutdown commanded." if ok else "❌ ESP32 unreachable."
+        return cmd_off()
     if cmd in ("/mainsdelay", "/wantimeout"):
         return cmd_set_delay(cmd.lstrip("/"), arg)
     return ("Available: /status /diag /on /off "

@@ -24,6 +24,42 @@ def test_on_off_commands(pm):
     assert "unreachable" in pm.handle_command("/on", None)
 
 
+def test_on_when_already_up_says_nothing_to_wake(pm):
+    """/on when node is healthy should NOT claim 'wake commanded'."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": True,
+                       "sdMains": False, "sdWAN": False, "sdManual": False,
+                       "manualOverride": False,
+                       "mainsFailSinceMs": 0, "wanFailSinceMs": 0}
+    sent = []
+    pm._esp_command = lambda cmd: sent.append(cmd) or True
+    reply = pm.handle_command("/on", None)
+    assert "already up" in reply, reply
+    assert sent == [], f"wake should not be sent when node is healthy: {sent}"
+
+
+def test_on_when_countdown_running_sends_wake(pm):
+    """/on during a mains countdown must send wake (sets manual override)."""
+    pm._esp32_state = {"mainsUp": False, "wanUp": True,
+                       "sdMains": False, "sdWAN": False, "sdManual": False,
+                       "manualOverride": False,
+                       "mainsFailSinceMs": 120000, "wanFailSinceMs": 0}
+    sent = []
+    pm._esp_command = lambda cmd: sent.append(cmd) or True
+    reply = pm.handle_command("/on", None)
+    assert "Wake commanded" in reply, reply
+    assert sent == [{"cmd": "wake"}], sent
+
+
+def test_off_when_already_down_says_so(pm):
+    """/off when node is already down should not send shutdown again."""
+    pm._esp32_state = {"sdMains": True, "sdWAN": False, "sdManual": False}
+    sent = []
+    pm._esp_command = lambda cmd: sent.append(cmd) or True
+    reply = pm.handle_command("/off", None)
+    assert "already down" in reply, reply
+    assert sent == [], f"shutdown should not be sent when node is down: {sent}"
+
+
 def test_mainsdelay_bounds(pm):
     _stub_esp_command(pm, ok=True)
     # valid: waiting message sent, no plain-text reply
