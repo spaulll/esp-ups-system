@@ -297,7 +297,7 @@ EVENT_TAXONOMY = {
     "online_confirmed":      ("critical",  lambda d: "✅ <b>Proxmox Online Confirmed</b>\n\nNode is back after power event."),
     "manual_on":             ("info",      lambda d: "✅ <b>Manual On</b>\n\nWake commanded."),
     "manual_override":       ("warning",   lambda d: "⚠️ <b>Manual Override</b>\n\nAuto-shutdown suppressed by /on."),
-    "gpio_test":             ("info",      lambda d: f"🧪 GPIO test: value={d.get('data') or '?'}"),
+    "gpio_test":             ("info",      lambda d: f"🧪 GPIO test: {d.get('data') or '?'}"),
     "mains_delay_set":       ("info",      lambda d: f"⏱️ Mains delay set to {d.get('data') or '?'}."),
     "wan_timeout_set":       ("info",      lambda d: f"⏱️ WAN timeout set to {d.get('data') or '?'}."),
 }
