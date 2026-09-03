@@ -91,6 +91,11 @@ _notify_queue = []          # list of (event_key, class, payload_dict)
 _notify_lock  = threading.Lock()
 _info_pending = None        # {events: [..], since: ts, notify_at: ts}
 
+# live countdown updater
+_cd_last_sent = 0.0         # last time we pushed a live countdown card
+_cd_sent_count = 0          # cards sent this outage (rate-limit cap)
+_esp_state_ts = 0.0         # wall-clock when _esp32_state was last refreshed
+
 # ===================== FILE PERSISTENCE =====================
 def _load_json(path, default):
     try:
@@ -546,6 +551,7 @@ def reconcile_once():
                 was_dead = _sensor_dead_since is not None
                 _esp32_state.clear()
                 _esp32_state.update(state)
+                _esp_state_ts = time.time()
                 _sensor_dead_since = None
             if was_dead:
                 notify_event("sensor_back", "info",
@@ -803,6 +809,51 @@ def telegram_loop():
         log.warning("could not register bot commands — menu may be missing")
     _tg_poll()
 
+
+def _build_countdown_card():
+    """Live mains countdown card, or None if no countdown is running."""
+    with _lock:
+        s = dict(_esp32_state)
+        ts = _esp_state_ts
+    if not s:
+        return None
+    if s.get("sdMains") or s.get("sdWAN") or s.get("sdManual") or s.get("manualOverride"):
+        return None
+    mfail = s.get("mainsFailSinceMs", 0) or 0
+    mdelay = s.get("mainsDelayMs", 300000) or 1
+    if mfail <= 0:
+        return None
+    now_ms = (time.time() - ts) * 1000 if ts else 0
+    elapsed = max(0, min(mfail + now_ms, mdelay))
+    remain = max(0, mdelay - elapsed)
+    down = int(elapsed // 1000)
+    left = int(remain // 1000)
+    frac = elapsed / mdelay if mdelay else 0
+    bar = _bar(frac)
+    return (f"🔴 <b>Power down for {fmt_downtime(down)}</b>\n"
+            f"   Auto-shutdown in <b>{fmt_downtime(left)}</b>\n"
+            f"   <code>{bar}</code>  {int(frac * 100)}%")
+
+
+def countdown_updater():
+    """Smart live progress: 30s cadence early, 5s in the final 2 minutes."""
+    global _cd_last_sent
+    log.info("countdown updater started")
+    while True:
+        card = _build_countdown_card()
+        now = time.time()
+        if card:
+            with _lock:
+                mfail = _esp32_state.get("mainsFailSinceMs", 0) or 0
+                mdelay = _esp32_state.get("mainsDelayMs", 300000) or 1
+            urgent_window = mfail > 0 and (mdelay - mfail) <= 120000
+            interval = 5 if urgent_window else 30
+            if now - _cd_last_sent >= interval:
+                _deliver(card, urgent=False)
+                _cd_last_sent = now
+        time.sleep(2)
+
+
 # ===================== MAIN =====================
 def main():
     _load_seq()
@@ -812,6 +863,7 @@ def main():
     threading.Thread(target=reconciler_loop, daemon=True).start()
     threading.Thread(target=webhook_server, daemon=True).start()
     threading.Thread(target=_notify_worker, daemon=True).start()
+    threading.Thread(target=countdown_updater, daemon=True).start()
     telegram_loop()
 
 if __name__ == "__main__":
