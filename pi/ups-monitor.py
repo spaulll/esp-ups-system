@@ -43,10 +43,7 @@ TG_CHAT_ID         = "__TG_CHAT_ID__"
 TG_POLL_TIMEOUT    = 10
 TG_PROXY          = "__TG_PROXY__"
 
-NTFY_URLS          = [
-    "https://ntfy.__NTFY_DDNS_HOST__",
-    "__NTFY_URL_2__",
-]
+NTFY_URLS          = ["__NTFY_URL__"]
 NTFY_TOPIC         = "__NTFY_TOPIC__"
 NTFY_TIMEOUT       = 6
 
