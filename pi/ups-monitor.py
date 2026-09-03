@@ -96,6 +96,10 @@ _cd_last_sent = 0.0         # last time we pushed a live countdown update
 _cd_msg_id = None           # message_id of the single live countdown card
 _esp_state_ts = 0.0         # wall-clock when _esp32_state was last refreshed
 
+# live /status reply (edited in place while a countdown runs)
+_status_msg_id = None
+_status_last_sent = 0.0
+
 # pending live-command confirmations: cmd -> {"message_id","mins","sent"}
 _pending_conf = {}
 _pending_conf_lock = threading.Lock()
@@ -732,6 +736,17 @@ def mains_down_notified():
     with _lock:
         return bool(_esp32_state.get("mainsFailSinceMs", 0))
 
+
+def _countdown_active():
+    """True while a real mains countdown is running (not overridden/shut down)."""
+    with _lock:
+        s = dict(_esp32_state)
+    if not s:
+        return False
+    if s.get("sdMains") or s.get("sdWAN") or s.get("sdManual") or s.get("manualOverride"):
+        return False
+    return (s.get("mainsFailSinceMs", 0) or 0) > 0
+
 def cmd_status():
     with _lock:
         s = dict(_esp32_state)
@@ -883,8 +898,18 @@ def _tg_poll():
             time.sleep(3)
 
 def handle_command(cmd, arg):
+    global _status_msg_id, _status_last_sent
     if cmd == "/status":
-        return cmd_status()
+        text = cmd_status()
+        # live-edit: during a countdown, send once and keep the reply updated
+        if _countdown_active():
+            mid = _tg_send_msg(text)
+            if mid is not None:
+                with _lock:
+                    _status_msg_id = mid
+                    _status_last_sent = time.time()
+                return None
+        return text
     if cmd == "/diag":
         return cmd_diag()
     if cmd == "/on":
@@ -951,6 +976,16 @@ def _cd_interval(elapsed_ms, delay_ms):
 def _countdown_tick():
     """One update cycle for the live countdown card. Returns True if a card is live."""
     global _cd_last_sent, _cd_msg_id
+    # If the user has a live /status reply open, let IT be the single updater
+    # instead of also ticking a separate countdown card (no message spam).
+    with _lock:
+        status_live = _status_msg_id is not None
+    if status_live:
+        if _cd_msg_id is not None:
+            _tg_del_msg(_cd_msg_id)
+            _cd_msg_id = None
+        _cd_last_sent = 0
+        return True
     card = _build_countdown_card()
     now = time.time()
     if card:
@@ -978,12 +1013,29 @@ def _countdown_tick():
     return False
 
 
+def _status_live_tick():
+    """Edit the /status reply in place while a countdown runs."""
+    global _status_msg_id, _status_last_sent
+    if _status_msg_id is None:
+        return
+    now = time.time()
+    if _countdown_active():
+        if now - _status_last_sent >= 5:   # fixed 5s cadence for a live status
+            _tg_edit_msg(_status_msg_id, cmd_status())
+            _status_last_sent = now
+    else:
+        # countdown ended -> one final refresh so the reply is not stale, then stop
+        _tg_edit_msg(_status_msg_id, cmd_status())
+        _status_msg_id = None
+
+
 def countdown_updater():
     """Live countdown card: ONE message edited in place at an adaptive cadence."""
     log.info("countdown updater started")
     while True:
         _expire_pending_confirmations()
         _countdown_tick()
+        _status_live_tick()
         time.sleep(2)
 
 

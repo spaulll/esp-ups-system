@@ -102,6 +102,10 @@ def _clean(pm):
         pm._info_pending = None
     with pm._pending_conf_lock:
         pm._pending_conf.clear()
+    pm._status_msg_id = None
+    pm._status_last_sent = 0
+    pm._cd_msg_id = None
+    pm._cd_last_sent = 0
     yield
 
 

@@ -33,6 +33,37 @@ def test_interval_monotonic_through_middle(pm):
     assert later >= earlier
 
 
+def test_status_live_edits_during_countdown(pm):
+    """/status during a countdown sends once, then the reply is edited live."""
+    stub_esp(pm, state={"mainsFailSinceMs": 30_000, "mainsDelayMs": 600_000,
+                        "mainsUp": False, "wanUp": True})
+    pm.reconcile_once()   # populate _esp32_state from stub
+    pm._tg_send_msg_calls.clear()
+    pm._tg_edit_msg_calls.clear()
+
+    # /status while counting down -> sends once, registers for live edits
+    assert pm.handle_command("/status", None) is None
+    assert len(pm._tg_send_msg_calls) == 1
+    with pm._lock:
+        assert pm._status_msg_id is not None
+
+    # next live tick -> edits the same reply, no second send
+    pm._status_last_sent = 0
+    pm._status_live_tick()
+    assert len(pm._tg_send_msg_calls) == 1, "must not send a second /status"
+    assert len(pm._tg_edit_msg_calls) == 1
+
+
+def test_status_normal_single_reply_when_no_countdown(pm):
+    """/status with no countdown is a normal one-shot reply."""
+    stub_esp(pm, state={"mainsUp": True, "wanUp": True, "fw": "V7.0"})
+    pm.reconcile_once()
+    pm._tg_send_msg_calls.clear()
+    reply = pm.handle_command("/status", None)
+    assert reply is not None and "Mains" in reply
+    assert pm._tg_send_msg_calls == [], "no live registration when mains is up"
+
+
 def test_updater_sends_then_edits_single_message(pm):
     # simulate mains down so _build_countdown_card returns a card
     stub_esp(pm, state={"mainsFailSinceMs": 10_000, "mainsDelayMs": 600_000,
