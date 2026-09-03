@@ -22,7 +22,7 @@
 | 0 | Repo scaffold + deploy tooling | ✅ Done | `deploy-pi.sh` idempotent, git tags work |
 | 1 | Firmware v2 core (GPIO mains, state machine, actuation) | 🔶 In progress | Bench test with jumper wire: full shutdown→WOL cycle |
 | 2 | Pi brain v2 (reconciler, TG, ntfy, alert engine) | ✅ Done | Kill-restart drill: zero lost/duplicate alerts — **passed 3/3 drills** (kill-restart exactly-once, duplicate-seq idempotent, TG→ntfy `[TG FAILED]` fallback) |
-| 3 | Optocoupler hardware bring-up | ⏸ Awaiting part | 20/20 real unplug cycles, 0 false triggers in 7-day soak |
+| 3 | Optocoupler hardware bring-up | 🔶 In progress | 20/20 real unplug cycles, 0 false triggers in 7-day soak — wiring verified, soak running |
 | 4 | UX polish + observability | ☐ Not started | Drill matrix §5 produces exactly the documented messages |
 | 5 | Final validation & sign-off | ☐ Not started | All fail-drills pass |
 
@@ -158,17 +158,18 @@ ups-system/
 
 ---
 
-## Phase 3 — Optocoupler Hardware Bring-Up ⏸ (part on order)
+## Phase 3 — Optocoupler Hardware Bring-Up 🔶 (wired & running)
 
 > 5V USB wall adapter (mains-powered) → PC817 LED side via series resistor; collector → GPIO 13 / D13 (`INPUT_PULLUP`), emitter → GND. **Mains isolation via the adapter — never wire mains directly.** Full schematic in `hardware/optocoupler-wiring.md` when the part lands.
 
-- [ ] Bench wire-up + multimeter verify: idle HIGH, adapter-on LOW
-- [ ] Firmware `mainsSource: gpio` active; network probe for mains **does not exist**
-- [ ] Calibration: switched-socket bench — 3s/5s/10s/60s controlled cuts ×20 → every cut ≥3s detected, zero triggers for <3s dithering; log GPIO bounce count per event (expect ≤2 transitions)
-- [ ] Adapter quality check: cheap chargers brown-out on sags — if the adapter resets on short blips, note it; the 3s stability rule absorbs normal sag, and a false *restore* is harmless (countdown only restarts), a false *down* just starts a countdown that a healthy supply cancels
+- [x] Bench wire-up verified **live without a multimeter** (firmware `/state` is the meter): adapter-on → `mainsRaw:0`/`mainsUp:true`, unplug → `mainsRaw:1`/`mainsUp:false`, re-plug → clean
+- [x] Firmware `mainsSource: gpio` active; network probe for mains **does not exist** (no 192.168.0.2 anywhere)
+- [x] Calibration (partial): real unplug cycles detected correctly, `mainsDown` counter + restore path proven; full 20× controlled-cuts matrix still to run
+- [ ] Adapter quality check: cheap chargers brown-out on sags — note if the adapter resets on short blips; the 3s stability rule absorbs normal sag, false *restore* is harmless, false *down* just starts a cancelable countdown
 - [ ] Disagreement drill (future hardening): unplug adapter while node has power → v2 simply reports mains down; if we later want a second opinion, it's a one-GPIO addition — out of scope for v2
 
 **Phase 3 acceptance:** 20/20 real unplug cycles detected; 7-day soak with zero false detections; `/diag` shows GPIO state transitions matching reality.
+- [ ] **Remaining (user):** 7-day soak is running in background (started 2026-09-03) — zero false triggers so far; complete the 20/20 controlled-cuts matrix when convenient.
 
 ---
 
