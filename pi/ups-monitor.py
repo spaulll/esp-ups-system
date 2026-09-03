@@ -761,6 +761,10 @@ def cmd_status():
     lines.append(f"{'🟢' if wan else '🔴'} <b>WAN</b>     <code>{'UP' if wan else 'DOWN'}</code>")
     lines.append(f"{'🟢' if prox_online else '🔴'} <b>Proxmox</b> <code>{'ONLINE' if prox_online else 'OFFLINE'}</code>"
                  + (f" · {prox_up}" if prox_online else ""))
+    if s.get("gpioTestOverride", -1) != -1:
+        lines.append("")
+        lines.append("🧪 <b>TEST MODE</b> — mains input simulated, real outages invisible. "
+                     "Restore live sensing on the ESP before trusting this status.")
 
     # Extrapolate elapsed from cached mainsFailSinceMs using wall-clock, the
     # same way the live countdown card does — so /status never looks stale.
@@ -817,6 +821,9 @@ def cmd_diag():
         if s.get("sdManual"): flags.append("sdManual")
         if s.get("manualOverride"): flags.append("manualOverride")
         lines.append(f"🚩 <b>Flags</b>   {', '.join(flags) if flags else 'none'}")
+        override = s.get("gpioTestOverride", -1)
+        if override != -1:
+            lines.append(f"🧪 <b>Test</b>    OVERRIDE={override} — simulated input, real mains invisible")
         lines.append(f"📊 <b>Today</b>   {counters.get('mains_down', 0)}× power loss · {counters.get('shutdowns', 0)}× shutdown")
         lines.append("────")
         led = f"seq {s.get('seq', '?')}"

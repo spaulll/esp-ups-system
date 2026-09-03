@@ -132,3 +132,24 @@ def test_status_and_diag_return_strings(pm):
     assert isinstance(pm.cmd_diag(), str)
     assert "Mains" in pm.cmd_status()
     assert "V7.0" in pm.cmd_diag()
+
+
+def test_status_warns_when_gpio_test_override_active(pm):
+    """A stuck set_gpio_test override blinds mains sensing — /status must say so."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
+                       "gpioTestOverride": 0}
+    assert "TEST MODE" in pm.cmd_status()
+
+
+def test_status_quiet_when_live_sensing(pm):
+    pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
+                       "gpioTestOverride": -1}
+    assert "TEST MODE" not in pm.cmd_status()
+
+
+def test_diag_shows_gpio_test_override(pm):
+    pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
+                       "gpioTestOverride": 1}
+    assert "OVERRIDE=1" in pm.cmd_diag()
+    pm._esp32_state["gpioTestOverride"] = -1
+    assert "OVERRIDE" not in pm.cmd_diag()
