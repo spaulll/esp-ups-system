@@ -703,34 +703,32 @@ def cmd_diag():
     if not s:
         lines.append("\n⚠️ <b>Sensor offline</b>\n\nNo live data available right now.")
     else:
-        lines.append(f"🧩 <b>Sensor firmware</b>   {s.get('fw', '?')}")
-        lines.append(f"⏱ <b>Sensor uptime</b>     {fmt_downtime(s.get('espUptimeMs',0)//1000)}")
-        lines.append(f"🔄 <b>Last reset</b>       {_plain_reset(s.get('espResetReason','unknown'))}")
-        rssi = s.get('rssi')
-        lines.append(f"📶 <b>WiFi signal</b>      {rssi} dBm" if isinstance(rssi,(int,float)) else "📶 <b>WiFi signal</b>  —")
-        mains = s.get("mainsUp", False)
+        fw = s.get('fw', '?')
+        up = fmt_downtime(s.get('espUptimeMs', 0) // 1000)
+        reset = _plain_reset(s.get('espResetReason', 'unknown'))
+        rssi = f"{s.get('rssi')} dBm" if isinstance(s.get('rssi'), (int, float)) else "—"
+        lines.append(f"🧩 <b>Sensor</b>  {fw} · {up} up · {reset}")
+        lines.append(f"📶 <b>WiFi</b>    {rssi}")
         stable_ms = s.get("mainsStableSinceMs", -1)
-        age = fmt_downtime(stable_ms//1000) if isinstance(stable_ms,(int,float)) and stable_ms >= 0 else "unknown"
-        lines.append(f"{'🟢' if mains else '🔴'} <b>Mains</b>            <code>{'UP' if mains else 'DOWN'}</code> · last change {age}")
-        lines.append(f"{'🟢' if s.get('wanUp') else '🔴'} <b>WAN</b>              <code>{'UP' if s.get('wanUp') else 'DOWN'}</code>")
-        lines.append(f"{'🟢' if prox_online else '🔴'} <b>Proxmox</b>          <code>{'ONLINE' if prox_online else 'OFFLINE'}</code>"
-                     + (f" · {prox_up}" if prox_online else ""))
-        lines.append("")
-        lines.append(f"⏱ <b>Shutdown delays</b>  mains {s.get('mainsDelayMs',300000)//60000}m · "
-                     f"wan {s.get('wanTimeoutMs',600000)//60000}m")
+        age = fmt_downtime(stable_ms // 1000) if isinstance(stable_ms, (int, float)) and stable_ms >= 0 else "unknown"
+        lines.append(f"🟢 <b>Mains</b>   {'UP' if s.get('mainsUp') else 'DOWN'} · last change {age}")
+        lines.append(f"🟢 <b>WAN</b>     {'UP' if s.get('wanUp') else 'DOWN'}")
+        lines.append(f"🟢 <b>Node</b>    {'ONLINE' if prox_online else 'OFFLINE'}" + (f" · {prox_up}" if prox_online else ""))
+        lines.append("────")
+        lines.append(f"⏱ <b>Delays</b>  mains {s.get('mainsDelayMs', 300000) // 60000}m · wan {s.get('wanTimeoutMs', 600000) // 60000}m")
         flags = []
         if s.get("sdMains"): flags.append("sdMains")
         if s.get("sdWAN"): flags.append("sdWAN")
         if s.get("sdManual"): flags.append("sdManual")
         if s.get("manualOverride"): flags.append("manualOverride")
-        lines.append(f"🚩 <b>Flags</b>            {', '.join(flags) if flags else 'none'}")
-        lines.append(f"📊 <b>Today</b>            {counters.get('mains_down',0)}× power loss · "
-                     f"{counters.get('shutdowns',0)}× shutdown · {counters.get('blips',0)}× blips")
-        lines.append(f"🧠 <b>Event ledger</b>     seq {s.get('seq','?')} · last seen {_last_seq}"
-                     + (" · synced" if _last_seq >= int(s.get('seq', _last_seq)) else " · pending"))
-        lines.append(f"📡 <b>Wake attempts</b>   {s.get('wolAttempts',0)} this cycle · "
-                     f"{counters.get('wolRexmit', 0)} re-sends today" if 'wolRexmit' in counters else
-                     f"📡 <b>Wake attempts</b>   {s.get('wolAttempts',0)} this cycle")
+        lines.append(f"🚩 <b>Flags</b>   {', '.join(flags) if flags else 'none'}")
+        lines.append(f"📊 <b>Today</b>   {counters.get('mains_down', 0)}× power loss · {counters.get('shutdowns', 0)}× shutdown")
+        lines.append("────")
+        led = f"seq {s.get('seq', '?')}"
+        if _last_seq >= int(s.get('seq', _last_seq)):
+            led += " · synced"
+        lines.append(f"🧠 <b>Ledger</b>  {led}")
+        lines.append(f"📡 <b>Wake</b>    {s.get('wolAttempts', 0)} this cycle · {counters.get('wolRexmit', 0)} re-sends")
     return "\n".join(lines)
 
 def cmd_set_delay(cmd, mins_str):
