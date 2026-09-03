@@ -1,7 +1,25 @@
-# __STUB__ — real systemd unit lands in Phase 2 (UPGRADE_PLAN).
-# deploy/deploy-pi.sh refuses to push stubs to the live Pi.
 [Unit]
-Description=UPS monitor v2 (stub, not installable)
+Description=UPS Monitor v2 — Pi brain (reconciler, Telegram, webhook, ntfy)
+Documentation=https://github.com/spaulll/esp-ups-system
+After=network-online.target
+Wants=network-online.target
+
 [Service]
-Type=oneshot
-ExecStart=/bin/true
+Type=notify
+ExecStart=/usr/local/bin/ups-monitor.py
+Restart=always
+RestartSec=10
+WatchdogSec=90
+NotifyAccess=main
+User=root
+Group=root
+
+# Hardening
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/ups-monitor /var/log
+
+[Install]
+WantedBy=multi-user.target

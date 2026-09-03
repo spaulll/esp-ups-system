@@ -21,7 +21,7 @@
 |---|---|---|---|
 | 0 | Repo scaffold + deploy tooling | ✅ Done | `deploy-pi.sh` idempotent, git tags work |
 | 1 | Firmware v2 core (GPIO mains, state machine, actuation) | 🔶 In progress | Bench test with jumper wire: full shutdown→WOL cycle |
-| 2 | Pi brain v2 (reconciler, TG, ntfy, alert engine) | ☐ Not started | Kill-restart drill: zero lost/duplicate alerts |
+| 2 | Pi brain v2 (reconciler, TG, ntfy, alert engine) | 🔶 In progress | Kill-restart drill: zero lost/duplicate alerts |
 | 3 | Optocoupler hardware bring-up | ⏸ Awaiting part | 20/20 real unplug cycles, 0 false triggers in 7-day soak |
 | 4 | UX polish + observability | ☐ Not started | Drill matrix §5 produces exactly the documented messages |
 | 5 | Final validation & sign-off | ☐ Not started | All fail-drills pass |
@@ -145,14 +145,14 @@ ups-system/
 
 > Thin by design: **no state mutation from webhooks ever**. The ESP32 is the single source of truth; the Pi reconciles, notifies, and commands.
 
-- [ ] Reconciler: poll `/state` + `/events?since=<last_seq>` every 15s; process unseen events exactly once (seq gaps → `event_log_gap` alert); counters (`mains_down`, `shutdowns`, `blips`) bump here only
-- [ ] Webhook receiver `:9997`: token-auth (`/notify?event=..&seq=..&token=..`), 403 otherwise, idempotent on duplicate seq, triggers an immediate reconcile pass (latency nudge, not authority)
-- [ ] Telegram: long-poll with **persisted offset** (`/var/lib/ups-monitor/tg-offset.json`) — no command replay after restarts; commands: `/status`, `/diag`, `/on`, `/off`, `/mainsdelay [1-720|reset]`, `/wantimeout [5-120]`, unknown → friendly command list (never silence)
-- [ ] Notification engine: single outbound worker + queue; `critical` (outage confirmed, shutdown, wake, wake_failed) → immediate + ntfy `urgent`; `info` (blips, reconciles) → 90s coalescing window → one summary message; TG fail → ntfy fallback (dual endpoint, `[TG FAILED]` tag); failed deliveries → missed-notifications ledger
-- [ ] `/status` data: mains (GPIO), WAN, Proxmox online + uptime via **PVE API** (TCP-reachability alone never counts as "confirmed" for verification messages), live countdowns, daily counters, sensor-blind banner
-- [ ] Proxmox shutdown verification: confirm offline via API uptime reset or agent ack — never "node accepted TCP" (v1's false-confirmation bug)
-- [ ] Pi code carries creds **embedded at deploy time**: `deploy-pi.sh` injects `.env` values into the RAM copy before scp — the Pi itself has **no** `.env`, no `EnvironmentFile`; the pushed `ups-monitor.py` is self-contained
-- [ ] systemd: `WatchdogSec=90` + sd_notify heartbeat, `Restart=always`, logrotate (weekly ×8)
+- [x] Reconciler: poll `/state` + `/events?since=<last_seq>` every 15s; process unseen events exactly once (seq gaps → `event_log_gap` alert); counters (`mains_down`, `shutdowns`, `blips`) bump here only
+- [x] Webhook receiver `:9997`: token-auth (`/notify?event=..&seq=..&token=..`), 403 otherwise, idempotent on duplicate seq, triggers an immediate reconcile pass (latency nudge, not authority)
+- [x] Telegram: long-poll with **persisted offset** (`/var/lib/ups-monitor/tg-offset.json`) — no command replay after restarts; commands: `/status`, `/diag`, `/on`, `/off`, `/mainsdelay [1-720|reset]`, `/wantimeout [5-120]`, unknown → friendly command list (never silence)
+- [x] Notification engine: single outbound worker + queue; `critical` (outage confirmed, shutdown, wake, wake_failed) → immediate + ntfy `urgent`; `info` (blips, reconciles) → 90s coalescing window → one summary message; TG fail → ntfy fallback (dual endpoint, `[TG FAILED]` tag); failed deliveries → missed-notifications ledger
+- [x] `/status` data: mains (GPIO), WAN, Proxmox online + uptime via **PVE API** (TCP-reachability alone never counts as "confirmed" for verification messages), live countdowns, daily counters, sensor-blind banner
+- [x] Proxmox shutdown verification: confirm offline via API uptime reset or agent ack — never "node accepted TCP" (v1's false-confirmation bug)
+- [x] Pi code carries creds **embedded at deploy time**: `deploy-pi.sh` injects `.env` values into the RAM copy before scp — the Pi itself has **no** `.env`, no `EnvironmentFile`; the pushed `ups-monitor.py` is self-contained
+- [x] systemd: `WatchdogSec=90` + sd_notify heartbeat, `Restart=always`, logrotate (weekly ×8)
 
 **Phase 2 acceptance:** queue `/off` → `systemctl restart ups-monitor` mid-flight → command executes exactly once; flap the webhook endpoint with 3 duplicate seqs → counter +1 total; block DNS to Telegram during a drill → ntfy delivers with `[TG FAILED]`, ledger records it.
 
