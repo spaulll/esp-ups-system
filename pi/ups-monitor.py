@@ -430,9 +430,18 @@ def reconcile_once():
         state = _esp_state()
         if state is not None:
             with _lock:
+                was_dead = _sensor_dead_since is not None
                 _esp32_state.clear()
                 _esp32_state.update(state)
                 _sensor_dead_since = None
+            if was_dead:
+                notify_event("sensor_back", "info",
+                             "🟢 <b>Sensor Back</b>\n\nESP32 reachable again — monitoring resumed.")
+            # First-ever run: seed from the ESP's current seq so we never
+            # replay the ring buffer's stale history as fresh alerts.
+            if not os.path.exists(SEQ_FILE) and not state.get("seq", 0) == 0:
+                _last_seq = int(state.get("seq", 0))
+                _save_seq()
         else:
             now = time.time()
             if _sensor_dead_since is None:
