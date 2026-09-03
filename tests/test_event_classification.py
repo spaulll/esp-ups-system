@@ -48,6 +48,19 @@ def test_critical_uses_urgent_for_ntfy(pm):
     assert ntfy[0][2] is True, "wake_failed is critical -> urgent"
 
 
+def test_ntfy_fallback_marks_tg_failed(pm):
+    # TG failure -> ntfy fallback must be invoked with tg_failed=True
+    pm.tg_fail = True
+    pm._deliver("🔴 test message", urgent=False)
+    ntfy = [d for d in pm.delivered if d[0] == "ntfy"]
+    assert ntfy, "expected ntfy fallback"
+    # the stub records (kind, text, urgent, tg_failed)
+    text, urgent, tg_failed = ntfy[0][1], ntfy[0][2], ntfy[0][3]
+    assert tg_failed is True, f"tg_failed not passed to ntfy: {ntfy[0]}"
+    # also verify the underlying _ntfy_send structure
+    assert "test message" in text
+
+
 def test_info_is_coalesced_not_immediate(pm):
     pm.process_event("mains_blip", 1, {"event": "mains_blip", "data": "1x"})
     time.sleep(0.3)

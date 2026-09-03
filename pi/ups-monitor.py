@@ -339,7 +339,7 @@ def _strip_html(text):
     text = re.sub(r"</?(b|i|u|s|code|pre|a)[^>]*>", "", text)
     return html.unescape(text)
 
-def _ntfy_send(text, urgent=False):
+def _ntfy_send(text, urgent=False, tg_failed=False):
     body = _strip_html(text)
     if len(body) > 4000:
         body = body[:4000] + "\n… [truncated]"
@@ -348,6 +348,8 @@ def _ntfy_send(text, urgent=False):
     payload = ("\n".join(lines[1:]) or title).encode()
     priority, tag = ("urgent", "rotating_light") if urgent else ("default", "information_source")
     safe_title = re.sub(r"[^\x20-\x7e]", "", title).strip() or "UPS Notification"
+    if tg_failed:
+        safe_title = "[TG FAILED] " + safe_title
     headers = {"Title": safe_title[:200], "Priority": priority, "Tags": tag}
     for base in NTFY_URLS:
         try:
@@ -367,7 +369,7 @@ def _deliver(text, urgent):
     except Exception as e:
         log.warning(f"telegram send raised: {e}")
     log.warning("Telegram delivery failed — falling back to ntfy")
-    ok = _ntfy_send(text, urgent=urgent)
+    ok = _ntfy_send(text, urgent=urgent, tg_failed=True)
     if not ok:
         _append_missed({"at": time.time(), "text": text[:500]})
         log.error("ntfy also failed — recorded in missed ledger")

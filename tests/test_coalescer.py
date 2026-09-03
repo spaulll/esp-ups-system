@@ -7,17 +7,18 @@ import time
 
 
 def _flush(pm, timeout=3.0):
-    """Force the coalescing window to expire and wait for the worker flush."""
+    """Force the coalescing window to expire and wait for a NEW summary."""
+    before = len(_summaries(pm))
     with pm._notify_lock:
         if pm._info_pending:
             pm._info_pending["notify_at"] = time.time() - 1
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if any("Info Summary" in d[1] for d in pm.delivered):
+        if len(_summaries(pm)) > before:
             return
         pm._notify_worker_wake()
         time.sleep(0.05)
-    raise AssertionError(f"no Info Summary delivered: {pm.delivered}")
+    raise AssertionError(f"no new Info Summary delivered: {pm.delivered}")
 
 
 def _summaries(pm):

@@ -28,7 +28,7 @@ def _load_pi_module():
     env.setdefault("ESP32_IP", "192.168.0.178")
     env.setdefault("PROXMOX_IP", "192.168.0.50")
     env.setdefault("PROXMOX_NODE", "prox")
-    env.setdefault("PVE_TOKEN", "__PVE_TOKEN__")
+    env.setdefault("PVE_TOKEN", "dummy-pve-token")
     env.setdefault("MAINS_DELAY_MIN", "5")
     env.setdefault("WAN_TIMEOUT_MIN", "10")
 
@@ -59,10 +59,10 @@ def pm():
         mod.delivered.append(("tg", text))
         return True
 
-    def _ntfy_send(text, urgent=False):
+    def _ntfy_send(text, urgent=False, tg_failed=False):
         if mod.ntfy_fail:
             return False
-        mod.delivered.append(("ntfy", text, urgent))
+        mod.delivered.append(("ntfy", text, urgent, tg_failed))
         return True
 
     mod._tg_send = _tg_send
