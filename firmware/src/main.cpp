@@ -90,6 +90,7 @@ uint32_t wakeFailedCount = 0;
 volatile bool cachedMainsUp = true;
 volatile bool cachedWanUp   = true;
 volatile int  cachedMainsRaw = HIGH;
+volatile unsigned long mainsStableSince = 0;
 volatile int  pendingBlips  = 0;
 portMUX_TYPE  cacheMux      = portMUX_INITIALIZER_UNLOCKED;
 
@@ -465,6 +466,9 @@ void mainsCheckTask(void* pv) {
     }
     if (raw != stableLevel && now - levelSince >= GPIO_STABLE_MS) {
       stableLevel = raw;
+      portENTER_CRITICAL(&cacheMux);
+      mainsStableSince = now;
+      portEXIT_CRITICAL(&cacheMux);
     }
     portENTER_CRITICAL(&cacheMux);
     cachedMainsUp = (stableLevel == LOW);
@@ -593,6 +597,7 @@ void handleGetState() {
   bool wUp = cachedWanUp;
   int raw = cachedMainsRaw;
   int blips = pendingBlips;
+  unsigned long stableSince = mainsStableSince;
   portEXIT_CRITICAL(&cacheMux);
   // RSSI is read here (server context, core 1) — never from a background task.
   int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -127;
@@ -600,6 +605,7 @@ void handleGetState() {
   JsonDocument d;
   d["mainsRaw"] = raw;
   d["mainsUp"] = mUp;
+  d["mainsStableSinceMs"] = stableSince ? (now - stableSince) : -1;
   d["wanUp"] = wUp;
   d["sdMains"] = sdMains;
   d["sdWAN"] = sdWAN;
@@ -620,6 +626,7 @@ void handleGetState() {
   cnt["shutdowns"] = shutdownCount;
   cnt["wolRexmit"] = wolRexmitCount;
   cnt["wakeFailed"] = wakeFailedCount;
+  d["wolAttempts"] = wolAttempts;
   d["seq"] = evSeq;
   d["fw"] = FW_VERSION;
   d["wakePhase"] = (int)wakePhase;
