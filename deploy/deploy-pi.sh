@@ -43,9 +43,10 @@ command -v sshpass >/dev/null || { echo "sshpass not installed"; exit 1; }
 
 SSH() { sshpass -p "$PASS" ssh "$@"; }
 SCP() { sshpass -p "$PASS" scp "$@"; }
-# sudo over non-interactive SSH: pipe the user password to `sudo -S`.
-# First sudo in each session primes the credential cache for the rest.
-SUDO() { sshpass -p "$PASS" ssh "$PI" "echo '$PASS' | sudo -S $*"; }
+# Run the WHOLE command chain as root over non-interactive SSH: pipe the
+# password into `sudo -S bash -c "..."` so every step elevates, not just the
+# first one. (Chain strings contain no single quotes, so the wrapping is safe.)
+SUDO() { sshpass -p "$PASS" ssh "$PI" "echo '$PASS' | sudo -S bash -c \"$*\""; }
 STAMP=$(date +%Y%m%d-%H%M%S)
 TMP=$(mktemp -d /dev/shm/ups-pi-XXXXX); trap 'rm -rf "$TMP"' EXIT
 
