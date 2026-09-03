@@ -736,6 +736,7 @@ def cmd_status():
     with _lock:
         s = dict(_esp32_state)
         counters = dict(_daily_counters)
+        ts = _esp_state_ts
     prox_online, _, prox_up = _pve_probe()
     header = f"⚡ <b>UPS Monitor</b> · <i>{time.strftime('%H:%M:%S')}</i>\n────"
 
@@ -749,15 +750,19 @@ def cmd_status():
     lines.append(f"{'🟢' if prox_online else '🔴'} <b>Proxmox</b> <code>{'ONLINE' if prox_online else 'OFFLINE'}</code>"
                  + (f" · {prox_up}" if prox_online else ""))
 
-    mfail = s.get("mainsFailSinceMs", 0)
-    mdelay = s.get("mainsDelayMs", 300000)
-    if mains_down_notified():
+    # Extrapolate elapsed from cached mainsFailSinceMs using wall-clock, the
+    # same way the live countdown card does — so /status never looks stale.
+    mfail = s.get("mainsFailSinceMs", 0) or 0
+    mdelay = s.get("mainsDelayMs", 300000) or 1
+    if mains_down_notified() and mfail:
+        mfail = min(mfail + (time.time() - ts) * 1000 if ts else mfail, mdelay)
         down_s = int(mfail // 1000)
         remain = max(0, (mdelay - mfail) // 1000)
+        frac = max(0.0, min(1.0, mfail / mdelay))
         lines.append("")
         lines.append(f"⏳ <b>Power down for {fmt_downtime(down_s)}</b>")
         lines.append(f"    Auto-shutdown in <b>{fmt_downtime(remain)}</b>")
-        lines.append(f"    <code>{_bar((mdelay - mfail) / mdelay)}</code>")
+        lines.append(f"    <code>{_bar(frac)}</code>  {int(frac * 100)}%")
     if s.get("sdMains") or s.get("sdWAN") or s.get("sdManual"):
         reason = "manual /off"
         if s.get("sdMains") and s.get("sdWAN"): reason = "power + internet loss"
