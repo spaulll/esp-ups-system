@@ -959,11 +959,11 @@ def _countdown_tick():
                 mdelay = _esp32_state.get("mainsDelayMs", 300000) or 1
             interval = _cd_interval(mfail, mdelay)
             if now - _cd_last_sent >= interval:
-                if not _tg_edit_msg(_cd_msg_id, card):
-                    # message gone (edited too much / deleted) -> resend
-                    _cd_msg_id = None
-                else:
-                    _cd_last_sent = now
+                # Telegram rejects rapid or identical edits; never resend on a
+                # failed edit (a new message would spam the chat). Just retry
+                # the edit next cycle.
+                _tg_edit_msg(_cd_msg_id, card)
+                _cd_last_sent = now
         return True
     # countdown over (restored / shutdown / override) -> clean up the card
     if _cd_msg_id is not None:
