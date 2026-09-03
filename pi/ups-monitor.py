@@ -616,7 +616,7 @@ def process_event(evt, seq, data):
         pve_verify(expect_up=True, label=evt)
 
 def reconcile_once():
-    global _last_seq, _sensor_dead_since
+    global _last_seq, _sensor_dead_since, _esp_state_ts
     with _reconcile_lock:
         state = _esp_state()
         if state is not None:

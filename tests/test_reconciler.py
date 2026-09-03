@@ -64,3 +64,15 @@ def test_sensor_back_notifies_on_recovery(pm, wait_for):
     assert wait_for(seen), f"sensor_back not enqueued: {pm._notify_queue}"
     # also verify the state was cleared
     assert pm._sensor_dead_since is None
+
+
+def test_reconcile_stamps_esp_state_time(pm):
+    """reconcile_once must update _esp_state_ts — the live countdown card and
+    /status extrapolate from it; a stale 0.0 freezes them and makes every
+    card edit a Telegram 400 (message not modified)."""
+    pm._esp_state_ts = 0.0
+    stub_esp(pm, state={"mainsUp": True, "wanUp": True, "seq": 0}, events=[])
+    before = time.time()
+    pm.reconcile_once()
+    assert pm._esp_state_ts >= before, \
+        f"_esp_state_ts not stamped (still {pm._esp_state_ts})"
