@@ -21,7 +21,7 @@
 |---|---|---|---|
 | 0 | Repo scaffold + deploy tooling | ✅ Done | `deploy-pi.sh` idempotent, git tags work |
 | 1 | Firmware v2 core (GPIO mains, state machine, actuation) | 🔶 In progress | Bench test with jumper wire: full shutdown→WOL cycle |
-| 2 | Pi brain v2 (reconciler, TG, ntfy, alert engine) | 🔶 In progress | Kill-restart drill: zero lost/duplicate alerts |
+| 2 | Pi brain v2 (reconciler, TG, ntfy, alert engine) | ✅ Done | Kill-restart drill: zero lost/duplicate alerts — **passed 3/3 drills** (kill-restart exactly-once, duplicate-seq idempotent, TG→ntfy `[TG FAILED]` fallback) |
 | 3 | Optocoupler hardware bring-up | ⏸ Awaiting part | 20/20 real unplug cycles, 0 false triggers in 7-day soak |
 | 4 | UX polish + observability | ☐ Not started | Drill matrix §5 produces exactly the documented messages |
 | 5 | Final validation & sign-off | ☐ Not started | All fail-drills pass |
