@@ -40,7 +40,9 @@ PVE_TIMEOUT        = 6
 
 TG_BOT_TOKEN       = "__TG_BOT_TOKEN__"
 TG_CHAT_ID         = "__TG_CHAT_ID__"
-TG_POLL_TIMEOUT    = 10
+TG_POLL_TIMEOUT    = 30   # long-poll wait: idle getUpdates re-issues (and re-resolves
+                           # api.telegram.org) this often; Telegram still returns
+                           # instantly when a command arrives, so no latency cost
 TG_PROXY          = "__TG_PROXY__"
 
 NTFY_URLS          = ["__NTFY_URL__"]
