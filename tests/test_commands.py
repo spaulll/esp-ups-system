@@ -18,6 +18,7 @@ def test_unknown_command_returns_friendly_list(pm):
 
 
 def test_on_off_commands(pm):
+    pm._pve_probe = lambda: (False, None, "Offline")
     _stub_esp_command(pm, ok=True)
     assert "Wake commanded" in pm.handle_command("/on", None)
     _stub_esp_command(pm, ok=False)
@@ -25,11 +26,12 @@ def test_on_off_commands(pm):
 
 
 def test_on_when_already_up_says_nothing_to_wake(pm):
-    """/on when node is healthy should NOT claim 'wake commanded'."""
+    """/on when Proxmox is actually up should NOT claim 'wake commanded'."""
     pm._esp32_state = {"mainsUp": True, "wanUp": True,
                        "sdMains": False, "sdWAN": False, "sdManual": False,
                        "manualOverride": False,
                        "mainsFailSinceMs": 0, "wanFailSinceMs": 0}
+    pm._pve_probe = lambda: (True, 100, "1m")
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/on", None)
@@ -37,12 +39,31 @@ def test_on_when_already_up_says_nothing_to_wake(pm):
     assert sent == [], f"wake should not be sent when node is healthy: {sent}"
 
 
+def test_on_when_prox_offline_but_no_esp_flags_sends_wake(pm):
+    """Regression: node shut down outside the system (manual power-off).
+
+    ESP flags stay clear, but /status shows OFFLINE via the PVE API. /on
+    must wake — never answer 'already up' while Proxmox is down."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": True,
+                       "sdMains": False, "sdWAN": False, "sdManual": False,
+                       "manualOverride": False,
+                       "mainsFailSinceMs": 0, "wanFailSinceMs": 0}
+    pm._pve_probe = lambda: (False, None, "Offline")
+    sent = []
+    pm._esp_command = lambda cmd: sent.append(cmd) or True
+    reply = pm.handle_command("/on", None)
+    assert "Wake commanded" in reply, reply
+    assert sent == [{"cmd": "wake"}], sent
+
+
 def test_on_when_countdown_running_sends_wake(pm):
-    """/on during a mains countdown must send wake (sets manual override)."""
+    """/on during a mains countdown must send wake (sets manual override),
+    even though Proxmox is still (briefly) online."""
     pm._esp32_state = {"mainsUp": False, "wanUp": True,
                        "sdMains": False, "sdWAN": False, "sdManual": False,
                        "manualOverride": False,
                        "mainsFailSinceMs": 120000, "wanFailSinceMs": 0}
+    pm._pve_probe = lambda: (True, 100, "1m")
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/on", None)
@@ -51,13 +72,39 @@ def test_on_when_countdown_running_sends_wake(pm):
 
 
 def test_off_when_already_down_says_so(pm):
-    """/off when node is already down should not send shutdown again."""
+    """/off when Proxmox is actually down should not send shutdown again."""
     pm._esp32_state = {"sdMains": True, "sdWAN": False, "sdManual": False}
+    pm._pve_probe = lambda: (False, None, "Offline")
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/off", None)
     assert "already down" in reply, reply
     assert sent == [], f"shutdown should not be sent when node is down: {sent}"
+
+
+def test_off_when_prox_offline_but_no_esp_flags_says_already_down(pm):
+    """Mirror case: node stopped externally — /off reports already down
+    instead of firing a pointless shutdown."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": True,
+                       "sdMains": False, "sdWAN": False, "sdManual": False}
+    pm._pve_probe = lambda: (False, None, "Offline")
+    sent = []
+    pm._esp_command = lambda cmd: sent.append(cmd) or True
+    reply = pm.handle_command("/off", None)
+    assert "already down" in reply, reply
+    assert sent == [], sent
+
+
+def test_off_when_prox_online_but_flags_stale_sends_shutdown(pm):
+    """Shutdown webhook never acked (flags set, node still up) — /off must
+    retry instead of trusting the stale flags."""
+    pm._esp32_state = {"sdMains": True, "sdWAN": False, "sdManual": False}
+    pm._pve_probe = lambda: (True, 100, "1m")
+    sent = []
+    pm._esp_command = lambda cmd: sent.append(cmd) or True
+    reply = pm.handle_command("/off", None)
+    assert "Shutdown commanded" in reply, reply
+    assert sent == [{"cmd": "shutdown"}], sent
 
 
 def test_mainsdelay_bounds(pm):

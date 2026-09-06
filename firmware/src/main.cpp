@@ -19,7 +19,7 @@ const char* WIFI_SSID            = "__WIFI_SSID__";
 const char* WIFI_PASS            = "__WIFI_PASS__";
 const uint8_t MAIN_ROUTER_BSSID[] = __WIFI_BSSID_BYTES__;
 const char* OTA_PASSWORD         = "__OTA_PASSWORD__";
-const char* FW_VERSION           = "V7.0";
+const char* FW_VERSION           = "V7.1";
 
 const char* PROXMOX_IP           = "__PROXMOX_IP__";
 const char* SHUTDOWN_URL         = "__PROXMOX_SHUTDOWN_URL__";
@@ -547,6 +547,7 @@ void handlePendingCommand() {
   pendingCmd = CMD_NONE;
   switch (cmd) {
     case CMD_WAKE:
+      if (wakePhase == WK_SETTLING || wakePhase == WK_POLLING) break;  // already waking — don't reset attempts
       if (isNodeDown()) {
         manualOverride = true;
         clearFlags();
@@ -558,10 +559,24 @@ void handlePendingCommand() {
         manualOverride = true;
         saveState();
         addEvent("manual_override", "suppress_mains_shutdown");
+      } else {
+        // Manual wake with no flags set (e.g. node shut down externally,
+        // outside the ESP's shutdown path). Was a silent no-op, so /on
+        // appeared to do nothing while the node stayed off.
+        addEvent("manual_on");
+        startWake();
       }
       break;
     case CMD_SHUTDOWN:
       if (!isNodeDown()) executeShutdown("manual");
+      else {
+        // Retry path: flags say down but the node is still up (shutdown
+        // webhook never acked). Re-arm the webhook without touching flags.
+        wakePhase = WK_IDLE;
+        sdPhase = SHD_SENDING;
+        sdRetry = 0;
+        sdLastTry = 0;
+      }
       break;
     case CMD_MAINSDELAY: {
       unsigned long newMs = (unsigned long)pendingMinutes * 60000UL;

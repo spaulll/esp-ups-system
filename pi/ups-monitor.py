@@ -907,22 +907,39 @@ def _esp_snapshot():
 
 
 def cmd_on():
-    """Handle /on — wake only if the node is down or a countdown is active."""
+    """Handle /on — wake unless the node is provably already up.
+
+    ESP flags alone can't prove "up": they only reflect shutdowns the ESP
+    itself initiated. A manual shutdown outside the system leaves flags
+    clear while Proxmox is actually offline (the exact "/status OFFLINE +
+    /on already-up" contradiction). So the gate uses the PVE API — the
+    same source /status displays. Countdown-override still fires first so
+    /on during an outage suppresses the shutdown even while Proxmox is
+    still (briefly) online.
+    """
     s = _esp_snapshot()
-    if not s:
-        return "✅ Wake commanded." if _send_esp("wake") else "❌ ESP32 unreachable."
-    down = s.get("sdMains") or s.get("sdWAN") or s.get("sdManual")
-    counting = (s.get("mainsFailSinceMs", 0) or 0) > 0 or (s.get("wanFailSinceMs", 0) or 0) > 0
-    if down or (counting and not s.get("manualOverride")):
-        ok = _send_esp("wake")
-        return "✅ Wake commanded." if ok else "❌ ESP32 unreachable."
-    return "ℹ️ Server is already up — nothing to wake."
+    if s:
+        counting = (s.get("mainsFailSinceMs", 0) or 0) > 0 or (s.get("wanFailSinceMs", 0) or 0) > 0
+        if counting and not s.get("manualOverride"):
+            ok = _send_esp("wake")
+            return "✅ Wake commanded." if ok else "❌ ESP32 unreachable."
+    prox_online, _, _ = _pve_probe()
+    if prox_online:
+        return "ℹ️ Server is already up — nothing to wake."
+    ok = _send_esp("wake")
+    return "✅ Wake commanded." if ok else "❌ ESP32 unreachable."
 
 
 def cmd_off():
-    """Handle /off — shutdown only if the node is not already down."""
-    s = _esp_snapshot()
-    if s and (s.get("sdMains") or s.get("sdWAN") or s.get("sdManual")):
+    """Handle /off — shutdown unless the node is provably already down.
+
+    Uses the PVE API (same source as /status): an externally-stopped node
+    reports "already down" instead of firing a pointless shutdown, while a
+    node that is still up always gets the command even if ESP flags look
+    stale (e.g. a shutdown webhook that never acked).
+    """
+    prox_online, _, _ = _pve_probe()
+    if not prox_online:
         return "ℹ️ Server is already down."
     ok = _send_esp("shutdown")
     return "✅ Shutdown commanded." if ok else "❌ ESP32 unreachable."
