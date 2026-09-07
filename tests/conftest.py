@@ -94,6 +94,7 @@ def _clean(pm):
     pm._esp32_state.clear()
     pm._last_seq = 0
     pm._sensor_dead_since = None
+    pm._sensor_blind_announced = False
     pm._tg_send_msg_calls.clear()
     pm._tg_edit_msg_calls.clear()
     with pm._notify_lock:

@@ -51,6 +51,7 @@ def test_sensor_blind_after_dead_threshold(pm, wait_for):
 
 def test_sensor_back_notifies_on_recovery(pm, wait_for):
     pm._sensor_dead_since = time.time() - pm.SENSOR_DEAD_SEC - 1
+    pm._sensor_blind_announced = True   # a blind was actually sent earlier
     stub_esp(pm, state={"mainsUp": True, "wanUp": True, "seq": 1})
     pm.reconcile_once()
     # info-class event may be drained from the queue into the coalescer by the
@@ -63,6 +64,24 @@ def test_sensor_back_notifies_on_recovery(pm, wait_for):
         return in_queue or pending or any("Sensor Back" in d[1] for d in pm.delivered)
     assert wait_for(seen), f"sensor_back not enqueued: {pm._notify_queue}"
     # also verify the state was cleared
+    assert pm._sensor_dead_since is None
+
+
+def test_transient_single_poll_failure_stays_silent(pm):
+    """Regression: one slow poll (>10s timeout) followed by recovery must NOT
+    produce 'Sensor Back' — no blind was ever announced, so there is nothing
+    to come back from. (Live case: a single 'esp /state poll failed: timed
+    out' with zero 'Sensor Blind' still yielded a 'Sensor Back' summary.)"""
+    stub_esp(pm, state=None)
+    pm.reconcile_once()                     # one failed poll: arms, no alert
+    assert pm._sensor_dead_since is not None
+    assert pm._sensor_blind_announced is False
+    stub_esp(pm, state={"mainsUp": True, "wanUp": True, "seq": 1}, events=[])
+    pm.reconcile_once()                     # recovery: must stay silent
+    time.sleep(0.3)
+    assert pm.delivered == [], f"transient blip must not notify: {pm.delivered}"
+    with pm._notify_lock:
+        assert pm._info_pending is None, "no back message may be pending"
     assert pm._sensor_dead_since is None
 
 

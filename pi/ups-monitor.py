@@ -83,6 +83,12 @@ _lock        = threading.Lock()
 _esp32_state = {}
 _last_seq    = 0
 _sensor_dead_since = None
+# True once a sensor_blind has actually been announced for the current
+# outage. A single missed /state poll arms _sensor_dead_since but stays
+# silent — sensor_back fires only if the user was told we were blind,
+# otherwise every transient WiFi/ESP hiccup produces a confusing "Back"
+# with no preceding "Blind".
+_sensor_blind_announced = False
 _daily_counters = {"date": None, "mains_down": 0, "shutdowns": 0, "blips": 0}
 
 # notification engine
@@ -628,17 +634,18 @@ def process_event(evt, seq, data):
         pve_verify(expect_up=True, label=evt)
 
 def reconcile_once():
-    global _last_seq, _sensor_dead_since, _esp_state_ts
+    global _last_seq, _sensor_dead_since, _esp_state_ts, _sensor_blind_announced
     with _reconcile_lock:
         state = _esp_state()
         if state is not None:
             with _lock:
-                was_dead = _sensor_dead_since is not None
+                announced = _sensor_blind_announced
                 _esp32_state.clear()
                 _esp32_state.update(state)
                 _esp_state_ts = time.time()
                 _sensor_dead_since = None
-            if was_dead:
+                _sensor_blind_announced = False
+            if announced:
                 notify_event("sensor_back", "info",
                              "🟢 <b>Sensor Back</b>\n\nESP32 reachable again — monitoring resumed.")
             # First-ever run: seed from the ESP's current seq so we never
@@ -654,6 +661,7 @@ def reconcile_once():
                 notify_event("sensor_blind", "warning",
                              "⚠️ <b>Sensor Blind</b>\n\nESP32 unreachable ≥45s. No false alerts — authority stays autonomous.")
                 _sensor_dead_since = now
+                _sensor_blind_announced = True
             return
 
         events = _esp_events(_last_seq)
