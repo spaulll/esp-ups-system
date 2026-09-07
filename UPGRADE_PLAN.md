@@ -318,8 +318,8 @@ GOT=$(curl -sf -m 8 "http://$ESP/state" | python3 -c 'import sys,json;print(json
 | `mains_down` | critical | GPIO low ≥3s → countdown started (mins from `mainsDelayMs`) |
 | `mains_restored` | critical | countdown cancelled / post-shutdown restore armed |
 | `shutdown_mains_start` / `shutdown_wan_start` | critical | timer expired → webhook to node |
-| `shutdown_complete` | critical | agent ack |
-| `wake_sequence_start` | critical | settle → WOL begins |
+| `shutdown_complete` | info (legacy, pre-V7.2 only) | transitional "Shutdown In Progress" — V7.2+ doesn't emit it; PVE-API "Confirmed Offline" is the sole offline authority (agent ACK ≠ server off: LXCs take minutes) |
+| `wake_sequence_start` | critical | settle → WOL begins (neutral wording — no "power is back"; verifies nothing, only `online_confirmed` triggers PVE verify to avoid duplicate "Confirmed Online") |
 | `wol_rexmitted` | warning | Proxmox not up, re-sending (attempt n/5) |
 | `wake_failed` | critical | 5 WOL attempts exhausted |
 | `esp_booted` (+reset reason) | info | boot |

@@ -67,7 +67,8 @@ def test_on_when_countdown_running_sends_wake(pm):
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/on", None)
-    assert "Wake commanded" in reply, reply
+    assert "Override" in reply, reply
+    assert "Wake commanded" not in reply, f"must not claim wake while node is up: {reply}"
     assert sent == [{"cmd": "wake"}], sent
 
 
@@ -200,3 +201,65 @@ def test_diag_shows_gpio_test_override(pm):
     assert "OVERRIDE=1" in pm.cmd_diag()
     pm._esp32_state["gpioTestOverride"] = -1
     assert "OVERRIDE" not in pm.cmd_diag()
+
+
+def test_status_shutting_down_while_node_still_online(pm):
+    """Shutdown commanded but Proxmox still up (normal: LXCs take minutes) —
+    /status must say 'Shutting down…', never 'Server down'."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
+                       "sdMains": False, "sdWAN": False, "sdManual": True,
+                       "mainsFailSinceMs": 0}
+    pm._pve_probe = lambda: (True, 100, "1m")
+    text = pm.cmd_status()
+    assert "Shutting down" in text, text
+    assert "Server down" not in text, text
+
+
+def test_status_server_down_only_when_actually_offline(pm):
+    """Flags set + PVE API unreachable -> honest 'Server down'."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
+                       "sdMains": False, "sdWAN": False, "sdManual": True,
+                       "mainsFailSinceMs": 0}
+    pm._pve_probe = lambda: (False, None, "Offline")
+    text = pm.cmd_status()
+    assert "Server down" in text, text
+    assert "Shutting down" not in text, text
+
+
+def test_status_waking_while_node_still_offline(pm):
+    """Wake in progress (wakePhase settling/polling) + node offline ->
+    /status shows 'Waking…', not silence."""
+    for phase in (1, 2):
+        pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
+                           "sdMains": False, "sdWAN": False, "sdManual": False,
+                           "wakePhase": phase, "mainsFailSinceMs": 0}
+        pm._pve_probe = lambda: (False, None, "Offline")
+        text = pm.cmd_status()
+        assert "Waking" in text, f"phase={phase}: {text}"
+
+
+def test_off_ack_sets_expectations(pm):
+    """Immediate /off reply must warn power-off takes minutes and that
+    confirmation follows — no 'confirmed off' claim."""
+    pm._pve_probe = lambda: (True, 100, "1m")
+    pm._esp_command = lambda cmd: True
+    reply = pm.handle_command("/off", None)
+    assert "Shutdown commanded" in reply, reply
+    assert "few minutes" in reply, reply
+    assert "onfirmation follows" in reply, reply
+    assert "confirmed" not in reply.lower().replace("confirmation follows", ""), reply
+
+
+def test_on_ack_sets_expectations(pm):
+    """Immediate /on reply must warn boot takes minutes and that
+    confirmation follows."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": True,
+                       "sdMains": False, "sdWAN": False, "sdManual": True,
+                       "manualOverride": False,
+                       "mainsFailSinceMs": 0, "wanFailSinceMs": 0}
+    pm._pve_probe = lambda: (False, None, "Offline")
+    pm._esp_command = lambda cmd: True
+    reply = pm.handle_command("/on", None)
+    assert "Wake commanded" in reply, reply
+    assert "few minutes" in reply, reply
+    assert "onfirmation follows" in reply, reply

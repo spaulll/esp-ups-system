@@ -333,8 +333,14 @@ EVENT_TAXONOMY = {
                   + (f" (attempt {d.get('data') or '?'})" if d.get('data') else "")
                   + " — retrying."),
     "shutdown_complete": (
-        "critical",
-        lambda d: "✅ <b>Server Shut Down</b>\n\nThe server confirmed it is off."),
+        # Legacy (pre-V7.2 firmware emitted this on webhook ACK, i.e.
+        # "shutdown initiated" — not "server off"). Kept so old firmware
+        # never lies loudly; V7.2+ doesn't emit it at all — the Pi's PVE-API
+        # "Confirmed Offline" verification is the sole offline authority.
+        "info",
+        lambda d: "🔄 <b>Shutdown In Progress</b>\n\nThe server acknowledged the"
+                  " shutdown request and is powering off. This can take a few"
+                  " minutes — confirmation follows when it's actually offline."),
     "webhook_gave_up": (
         "critical",
         lambda d: "🚨 <b>Shutdown Couldn't Be Confirmed</b>\n\n"
@@ -342,8 +348,9 @@ EVENT_TAXONOMY = {
                   + " or the shutdown service is down. The wake-up logic stays armed."),
     "wake_sequence_start": (
         "critical",
-        lambda d: "🟡 <b>Waking the Server</b>\n\nPower is back. Waiting a few seconds,"
-                  + " then sending the wake-up signal."),
+        lambda d: "🟡 <b>Waking the Server</b>\n\nWake-up signal sending now."
+                  " The server can take a few minutes to come up —"
+                  " confirmation follows when it's actually online."),
     "wol_rexmitted": (
         "warning",
         lambda d: "📡 <b>Wake Signal Re-sent</b>\n\nServer hasn't come up yet"
@@ -355,7 +362,7 @@ EVENT_TAXONOMY = {
                   + " It needs manual attention.\n\nTry /on once it has power."),
     "online_confirmed": (
         "critical",
-        lambda d: "✅ <b>Server Is Back Online</b>\n\nThe server is up after the power event."),
+        lambda d: "✅ <b>Server Is Back Online</b>\n\nThe server is up and responding."),
     "manual_on": (
         "info",
         lambda d: "✅ <b>Manual Wake</b>\n\nWake-up signal sent as you asked."),
@@ -416,8 +423,11 @@ def _parse_gpio_test(data):
         return str(data)
 
 # events that also trigger PVE verification
+# NB: wake_sequence_start is deliberately NOT here — at wake start the node
+# is still offline, so verifying from there only duplicates the
+# online_confirmed verification (two "Confirmed Online" for one wake).
 VERIFY_OFFLINE = {"shutdown_mains_start", "shutdown_wan_start", "shutdown_manual_start"}
-VERIFY_ONLINE  = {"wake_sequence_start", "online_confirmed"}
+VERIFY_ONLINE  = {"online_confirmed"}
 
 # ===================== NOTIFICATION ENGINE =====================
 def notify_event(event, klass, text):
@@ -787,7 +797,17 @@ def cmd_status():
         elif s.get("sdMains"): reason = "power loss"
         elif s.get("sdWAN"): reason = "internet loss"
         lines.append("")
-        lines.append(f"🛡 <b>Server down</b> · {reason}")
+        if prox_online:
+            # Shutdown commanded but the node hasn't powered off yet (normal:
+            # Proxmox with many LXCs takes minutes). Never claim "down" here.
+            lines.append(f"🟡 <b>Shutting down…</b> · {reason} — waiting for the"
+                         f" server to power off (can take a few minutes)")
+        else:
+            lines.append(f"🛡 <b>Server down</b> · {reason}")
+    elif not prox_online and s.get("wakePhase") in (1, 2):
+        lines.append("")
+        lines.append("🟡 <b>Waking…</b> — wake signal sent, waiting for the"
+                     " server to come up (can take a few minutes)")
     lines.append("")
     lines.append(f"📊 Today: {counters.get('mains_down',0)}× power loss · "
                  f"{counters.get('shutdowns',0)}× shutdown · {counters.get('blips',0)}× blips")
@@ -924,12 +944,18 @@ def cmd_on():
         counting = (s.get("mainsFailSinceMs", 0) or 0) > 0 or (s.get("wanFailSinceMs", 0) or 0) > 0
         if counting and not s.get("manualOverride"):
             ok = _send_esp("wake")
-            return "✅ Wake commanded." if ok else "❌ ESP32 unreachable."
+            if not ok:
+                return "❌ ESP32 unreachable."
+            return ("✅ Override sent — auto-shutdown suspended for this outage.\n\n"
+                    "The server stays up. Use /off if you want it down.")
     prox_online, _, _ = _pve_probe()
     if prox_online:
         return "ℹ️ Server is already up — nothing to wake."
     ok = _send_esp("wake")
-    return "✅ Wake commanded." if ok else "❌ ESP32 unreachable."
+    if not ok:
+        return "❌ ESP32 unreachable."
+    return ("✅ Wake commanded.\n\nWake signal sent — the server can take a few"
+            " minutes to come up. Confirmation follows when it's actually online.")
 
 
 def cmd_off():
@@ -944,7 +970,11 @@ def cmd_off():
     if not prox_online:
         return "ℹ️ Server is already down."
     ok = _send_esp("shutdown")
-    return "✅ Shutdown commanded." if ok else "❌ ESP32 unreachable."
+    if not ok:
+        return "❌ ESP32 unreachable."
+    return ("✅ Shutdown commanded.\n\nServer is powering off — this can take a"
+            " few minutes with many services. Confirmation follows when it's"
+            " actually offline.")
 
 
 def handle_command(cmd, arg):

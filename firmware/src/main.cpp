@@ -19,7 +19,7 @@ const char* WIFI_SSID            = "__WIFI_SSID__";
 const char* WIFI_PASS            = "__WIFI_PASS__";
 const uint8_t MAIN_ROUTER_BSSID[] = __WIFI_BSSID_BYTES__;
 const char* OTA_PASSWORD         = "__OTA_PASSWORD__";
-const char* FW_VERSION           = "V7.1";
+const char* FW_VERSION           = "V7.2";
 
 const char* PROXMOX_IP           = "__PROXMOX_IP__";
 const char* SHUTDOWN_URL         = "__PROXMOX_SHUTDOWN_URL__";
@@ -363,8 +363,11 @@ void handleShutdownProgress(unsigned long now) {
   int code = http.GET();
   http.end();
   if (code == 200) {
+    // HTTP 200 from the agent means "shutdown initiated", NOT "server off".
+    // Proxmox with many LXCs/services takes minutes to power off, so never
+    // claim offline here — the Pi's PVE-API verification is the sole
+    // offline authority (it emits "Proxmox Confirmed Offline").
     addEvent("shutdown_webhook_ok");
-    addEvent("shutdown_complete");
     sdPhase = SHD_IDLE;
   } else {
     sdRetry++;

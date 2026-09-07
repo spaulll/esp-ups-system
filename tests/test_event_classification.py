@@ -96,3 +96,40 @@ def test_restored_format_millis_to_seconds(pm):
     _, fmt = pm.EVENT_TAXONOMY["mains_restored"]
     msg = fmt({"data": "downtimeMs=123000"})
     assert "2m 3s" in msg, msg
+
+
+def test_shutdown_complete_is_honest_transitional_info(pm):
+    """Regression: pre-V7.2 firmware emitted shutdown_complete on webhook ACK
+    ('shutdown initiated') while Proxmox still needed minutes to power off —
+    the old 'confirmed it is off' text lied. Must be info-class transitional,
+    never claiming offline (PVE-API verification owns that)."""
+    klass, fmt = pm.EVENT_TAXONOMY["shutdown_complete"]
+    assert klass == "info", f"shutdown_complete must coalesce, got {klass}"
+    msg = fmt({})
+    assert "confirmed it is off" not in msg, msg
+    assert "Shut Down" not in msg or "In Progress" in msg, msg
+    # and it must NOT jump the queue: info coalesces, no immediate delivery
+    pm.process_event("shutdown_complete", 1, {"event": "shutdown_complete"})
+    time.sleep(0.3)
+    assert pm.delivered == [], f"transitional info must coalesce: {pm.delivered}"
+
+
+def test_wake_sequence_start_neutral_no_power_claim(pm):
+    """Manual /on while mains was always UP must not hear 'Power is back'."""
+    _, fmt = pm.EVENT_TAXONOMY["wake_sequence_start"]
+    msg = fmt({})
+    assert "Power is back" not in msg, msg
+
+
+def test_online_confirmed_neutral_no_power_event(pm):
+    """Manual /on recovery is not 'after the power event'."""
+    _, fmt = pm.EVENT_TAXONOMY["online_confirmed"]
+    msg = fmt({})
+    assert "power event" not in msg, msg
+
+
+def test_wake_start_does_not_trigger_duplicate_online_verify(pm):
+    """wake_sequence_start + online_confirmed both verifying online produced
+    two 'Confirmed Online' messages for one wake. Only online_confirmed may."""
+    assert "wake_sequence_start" not in pm.VERIFY_ONLINE, pm.VERIFY_ONLINE
+    assert "online_confirmed" in pm.VERIFY_ONLINE, pm.VERIFY_ONLINE
