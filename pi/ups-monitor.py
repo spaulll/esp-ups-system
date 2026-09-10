@@ -455,6 +455,10 @@ EVENT_TAXONOMY = {
         lambda d: "🚨 <b>Server Didn't Wake</b>\n\nAfter 5 wake attempts the server is still off."
                   + " It needs manual attention.\n\nTry /on once it has power."),
     "online_confirmed": (
+        # Never notified directly (see process_event): the PVE-verified
+        # "Proxmox Confirmed Online" is the sole online voice — honest
+        # (API-checked), carries outage total, hides fresh-boot uptime.
+        # Kept here so the taxonomy stays exhaustive.
         "critical",
         lambda d: "✅ <b>Server Is Back Online</b>\n\nThe server is up and responding."),
     "manual_on": (
@@ -716,6 +720,12 @@ def process_event(evt, seq, data):
         return
     klass, fmt = taxonomy
     _remember_outage(evt, data)
+    if evt in VERIFY_ONLINE:
+        # Single online voice: the ESP's own liveness message would double
+        # the PVE-verified confirmation minutes later. Verify (which notifies)
+        # is enough — "Waking..." + "Confirmed Online" tells the story.
+        pve_verify(expect_up=True, label=evt)
+        return
     if evt == "mains_down":
         _bump_counter("mains_down")
     elif evt == "mains_blip":
@@ -725,8 +735,6 @@ def process_event(evt, seq, data):
     notify_event(evt, klass, fmt(data))
     if evt in VERIFY_OFFLINE:
         pve_verify(expect_up=False, label=evt)
-    elif evt in VERIFY_ONLINE:
-        pve_verify(expect_up=True, label=evt)
 
 def reconcile_once():
     global _last_seq, _sensor_dead_since, _esp_state_ts, _sensor_blind_announced

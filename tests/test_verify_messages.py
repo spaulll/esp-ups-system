@@ -17,6 +17,24 @@ def test_shutdown_webhook_ok_dropped_silently(pm):
         assert pm._info_pending is None
 
 
+def test_online_confirmed_single_voice_via_verify(pm):
+    """One wake = one online message: the ESP-direct text is dropped, the
+    PVE-verified confirmation is the sole voice (still triggered here)."""
+    calls = []
+    orig = pm.pve_verify
+    pm.pve_verify = lambda **kw: calls.append(kw)
+    try:
+        pm.process_event("online_confirmed", 7, {"event": "online_confirmed"})
+        time.sleep(0.3)
+    finally:
+        pm.pve_verify = orig
+    assert calls and calls[0].get("label") == "online_confirmed", calls
+    assert calls[0].get("expect_up") is True, calls
+    assert pm.delivered == [], f"direct online text must not notify: {pm.delivered}"
+    with pm._notify_lock:
+        assert pm._info_pending is None
+
+
 def test_human_reason_replaces_trigger(pm):
     pm._esp32_state = {"mainsDelayMs": 300000, "wanTimeoutMs": 600000}
     for label in ("shutdown_mains_start", "shutdown_wan_start",
