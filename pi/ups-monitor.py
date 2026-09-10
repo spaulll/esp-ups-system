@@ -321,7 +321,12 @@ def _consume_outage_line():
     return ""
 
 def pve_verify(expect_up, label, timeout_sec=180, interval=10):
-    """Confirm offline/online via the PVE API (never TCP alone), background thread."""
+    """Confirm offline/online via the PVE API (never TCP alone), background thread.
+
+    Confirmations are critical (immediate + urgent): they close the loop on a
+    shutdown/wake the user is watching — parking them in the 90s info
+    coalescer produced "shutdown 04:50, confirmed 04:52" confusion.
+    """
     def run():
         start = time.time()
         while time.time() - start < timeout_sec:
@@ -336,12 +341,12 @@ def pve_verify(expect_up, label, timeout_sec=180, interval=10):
                         uptime_line = f"\n⌚ Uptime: {up_str}"
                 except Exception:
                     uptime_line = ""
-                notify_event("system_info", "info",
+                notify_event("system_info", "critical",
                              f"✅ <b>Proxmox Confirmed Online</b>\n\n"
                              f"{_human_reason(label)}{outage_line}{uptime_line}")
                 return
             if not expect_up and not online:
-                notify_event("system_info", "info",
+                notify_event("system_info", "critical",
                              f"✅ <b>Proxmox Confirmed Offline</b>\n\n{_human_reason(label)}")
                 return
             time.sleep(interval)

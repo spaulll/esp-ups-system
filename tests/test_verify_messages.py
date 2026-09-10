@@ -70,6 +70,19 @@ def _get(pm, needle):
     return ""
 
 
+def test_confirmations_deliver_immediately(pm, wait_for):
+    """Offline/online confirmations are critical: immediate delivery, never
+    parked in the 90s info coalescer."""
+    pm._esp32_state = {"mainsDelayMs": 300000}
+    pm._pve_probe = lambda: (False, None, "Offline")
+    pm.pve_verify(expect_up=False, label="shutdown_mains_start",
+                  timeout_sec=5, interval=0.05)
+    assert wait_for(lambda: any("Confirmed Offline" in d[1]
+                                for d in pm.delivered if d[0] == "tg")), pm.delivered
+    with pm._notify_lock:
+        assert pm._info_pending is None, "confirmation must not coalesce"
+
+
 def test_offline_verify_uses_human_reason(pm, wait_for):
     pm._esp32_state = {"mainsDelayMs": 300000}
     pm._pve_probe = lambda: (False, None, "Offline")
