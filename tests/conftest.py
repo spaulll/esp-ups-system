@@ -78,6 +78,7 @@ def pm():
     mod.MISSED_FILE = os.path.join(mod.STATE_DIR, "missed-ledger.json")
     mod.COUNTERS_FILE = os.path.join(mod.STATE_DIR, "daily-counters.json")
     mod.OUTAGE_FILE = os.path.join(mod.STATE_DIR, "outage.json")
+    mod.HISTORY_FILE = os.path.join(mod.STATE_DIR, "outage-history.json")
 
     # single worker for the whole session — avoids double-delivery races
     t = threading.Thread(target=mod._notify_worker, daemon=True)
@@ -100,7 +101,8 @@ def _clean(pm):
                       ("_last_mains_downtime_sec", None)):
         if hasattr(pm, attr):
             setattr(pm, attr, val)
-    for f in (getattr(pm, "OUTAGE_FILE", None),):
+    for f in (getattr(pm, "OUTAGE_FILE", None),
+              getattr(pm, "HISTORY_FILE", None)):
         if f:
             try:
                 os.remove(f)

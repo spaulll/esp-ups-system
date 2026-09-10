@@ -41,7 +41,7 @@ Wall mains ──→ 5V USB adapter ──→ PC817 optocoupler ──→ ESP32 
 | 1 | Firmware v2 core (GPIO mains, event ledger, WOL/shutdown) | 🔶 In progress |
 | 2 | Pi brain (reconciler, Telegram, ntfy, PVE) | ✅ Done — 3/3 drills passed |
 | 3 | Optocoupler hardware bring-up | 🔶 In progress — wired, verified, soak running |
-| 4 | UX polish + observability | 🔶 In progress — pytest (35), live countdown, live-edit /status |
+| 4 | UX polish + observability | 🔶 In progress — pytest (78), live countdown, live-edit /status |
 | 5 | Final validation | ☐ Not started |
 
 ## Repository layout
@@ -52,7 +52,7 @@ firmware/      ESP32 PlatformIO project (GPIO mains sense, WOL, shutdown agent)
 pi/            Pi brain: Telegram bot, event reconciler, ntfy fallback, PVE
 hardware/      Optocoupler wiring notes (PC817 + 5V adapter, isolated)
 deploy/        deploy-pi.sh, ota-esp32.sh (inject creds from .env at push time)
-tests/         Pi-side pytest (35 tests, runs in builder LXC)
+tests/         Pi-side pytest (78 tests, runs in builder LXC)
 ```
 
 Secrets live only in a git-ignored `.env` (see `.env.example`). Sources carry
@@ -77,6 +77,8 @@ Available after typing `/` in the bot chat:
 | `/off` | Shut the server down |
 | `/mainsdelay` | Set power-loss shutdown delay (1–720 min) |
 | `/wantimeout` | Set internet-loss shutdown delay (5–120 min) |
+| `/missed` | Show alerts that failed delivery |
+| `/history` | Recent power/internet outages |
 
 ## Key invariants
 

@@ -62,6 +62,8 @@ TG_OFFSET    = os.path.join(STATE_DIR, "tg-offset.json")
 MISSED_FILE  = os.path.join(STATE_DIR, "missed-ledger.json")
 COUNTERS_FILE = os.path.join(STATE_DIR, "daily-counters.json")
 OUTAGE_FILE  = os.path.join(STATE_DIR, "outage.json")
+HISTORY_FILE = os.path.join(STATE_DIR, "outage-history.json")
+HISTORY_MAX  = 10
 LOG_FILE     = "/var/log/ups-monitor.log"
 # ============================================================================
 
@@ -361,6 +363,48 @@ def _save_outage():
                 "downtime_sec": _last_mains_downtime_sec}
     _save_json(OUTAGE_FILE, data)
 
+# ===================== OUTAGE HISTORY (last-N, persisted) =====================
+def _load_history():
+    data = _load_json(HISTORY_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def _save_history(entries):
+    _save_json(HISTORY_FILE, entries[-HISTORY_MAX:])
+
+
+def _history_open(cause, shutdown=False):
+    """Open an outage entry, or fold into the already-open one.
+
+    A mains outage followed by its shutdown is ONE outage — the shutdown
+    only flips the flag, it never starts a second entry.
+    """
+    entries = _load_history()
+    if entries and entries[-1].get("end") is None:
+        if cause == "mains" or not entries[-1].get("cause"):
+            entries[-1]["cause"] = cause
+        entries[-1]["shutdown"] = bool(entries[-1].get("shutdown") or shutdown)
+    else:
+        entries.append({"start": time.time(), "end": None, "cause": cause,
+                        "shutdown": bool(shutdown), "downtime_sec": None})
+    _save_history(entries)
+
+
+def _history_close(downtime_sec=None):
+    """Close the open outage entry, if any. Unknown span stays honest."""
+    entries = _load_history()
+    if entries and entries[-1].get("end") is None:
+        now = time.time()
+        entries[-1]["end"] = now
+        if downtime_sec is not None:
+            entries[-1]["downtime_sec"] = int(downtime_sec)
+        else:
+            try:
+                entries[-1]["downtime_sec"] = int(now - float(entries[-1]["start"]))
+            except Exception:
+                entries[-1]["downtime_sec"] = None
+        _save_history(entries)
+
 def _consume_outage_line():
     """Total mains downtime for the online message, once. Empty if unknown.
 
@@ -376,11 +420,15 @@ def _consume_outage_line():
         _last_mains_down_at = None
         _last_mains_downtime_sec = None
     _save_outage()
+    # The online confirmation means the outage is over — close the history
+    # entry with the same total the message shows.
     if start is not None:
         secs = int(time.time() - start)
         if secs >= 5:
+            _history_close(secs)
             return f"\n⏱ Power was out for {fmt_downtime(secs)} in total."
     if fallback:
+        _history_close(fallback)
         return f"\n⏱ Power was out for {fmt_downtime(fallback)} in total."
     return ""
 
@@ -809,6 +857,20 @@ def process_event(evt, seq, data):
         return
     klass, fmt = taxonomy
     _remember_outage(evt, data)
+    if evt == "mains_down":
+        _history_open("mains")
+    elif evt == "shutdown_mains_start":
+        _history_open("mains", shutdown=True)
+    elif evt == "shutdown_wan_start":
+        _history_open("wan", shutdown=True)
+    elif evt == "shutdown_manual_start":
+        _history_open("manual", shutdown=True)
+    elif evt in ("mains_restored", "wan_restored"):
+        try:
+            raw = (data.get("data") if isinstance(data, dict) else data) or ""
+            _history_close(int(str(raw).split("=")[-1]) // 1000)
+        except Exception:
+            _history_close()
     if evt in VERIFY_ONLINE:
         # Single online voice: the ESP's own liveness message would double
         # the PVE-verified confirmation minutes later. Verify (which notifies)
@@ -917,6 +979,7 @@ TG_COMMANDS = [
     {"command": "mainsdelay", "description": "Set power-loss shutdown delay (1-720 min)"},
     {"command": "wantimeout", "description": "Set internet-loss shutdown delay (5-120 min)"},
     {"command": "missed", "description": "Show alerts that failed delivery"},
+    {"command": "history", "description": "Recent power/internet outages"},
 ]
 
 
@@ -1198,6 +1261,33 @@ def cmd_missed():
     return "\n".join(lines)
 
 
+def cmd_history():
+    """Recent outages, newest first — no chat scrolling needed."""
+    entries = _load_history()
+    if not entries:
+        return "📭 No outages recorded yet."
+    lines = ["🗂 <b>Outage History</b> (newest first)\n────"]
+    cause_word = {"mains": "power", "wan": "internet", "manual": "manual"}
+    for e in reversed(entries[-HISTORY_MAX:]):
+        try:
+            start_s = time.strftime("%m-%d %H:%M", time.localtime(float(e["start"])))
+        except Exception:
+            start_s = "--"
+        if e.get("end"):
+            try:
+                end_s = time.strftime("%H:%M", time.localtime(float(e["end"])))
+            except Exception:
+                end_s = "?"
+            dur = e.get("downtime_sec")
+            span = fmt_downtime(dur) if isinstance(dur, (int, float)) and dur >= 0 else "?"
+            when = f"{start_s} → {end_s} ({span})"
+        else:
+            when = f"{start_s} → ongoing"
+        flag = " · shutdown" if e.get("shutdown") else ""
+        lines.append(f"• {when} — {cause_word.get(e.get('cause'), '?')}{flag}")
+    return "\n".join(lines)
+
+
 def handle_command(cmd, arg):
     global _status_msg_id, _status_last_sent
     if cmd == "/status":
@@ -1221,7 +1311,9 @@ def handle_command(cmd, arg):
         return cmd_set_delay(cmd.lstrip("/"), arg)
     if cmd == "/missed":
         return cmd_missed()
-    return ("Available: /status /diag /on /off /missed "
+    if cmd == "/history":
+        return cmd_history()
+    return ("Available: /status /diag /on /off /missed /history "
             "/mainsdelay [1-720|reset] /wantimeout [5-120|reset]")
 
 def telegram_loop():
