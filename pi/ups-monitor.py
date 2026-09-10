@@ -331,6 +331,8 @@ EVENT_TAXONOMY = {
         "critical",
         lambda d: "🔴 <b>Shutting Down — Manual</b>\n\nYou asked for shutdown. Server going down now.\n\nUse /on to wake it later."),
     "shutdown_webhook_ok": (
+        # Dropped in process_event (never notified) — agent ACK noise.
+        # Kept here so the taxonomy stays exhaustive for old firmware.
         "info",
         lambda d: "✅ Shutdown request accepted by the server."),
     "shutdown_webhook_failed": (
@@ -612,6 +614,12 @@ def _maybe_confirm_pending(evt, data):
 
 def process_event(evt, seq, data):
     global _last_seq
+    # Dropped noise: the agent ACK ("Shutdown request accepted") adds no
+    # information — the "Shutting Down" command + PVE "Confirmed Offline"
+    # pair already tells the story. Skip silently (seq still advances).
+    if evt == "shutdown_webhook_ok":
+        log.debug(f"dropping noisy {evt} (seq={seq})")
+        return
     taxonomy = EVENT_TAXONOMY.get(evt)
     if not taxonomy:
         log.warning(f"unknown event {evt} (seq={seq})")
