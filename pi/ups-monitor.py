@@ -192,8 +192,38 @@ def _sd_notify(msg):
 
 def watchdog_thread():
     while True:
-        _sd_notify("WATCHDOG=1")
+        stale = _watchdog_stale()
+        if stale:
+            # Withhold the systemd heartbeat so WatchdogSec=90 restarts us.
+            # A wedged loop previously went unnoticed forever (the notify
+            # below fired even with every worker dead).
+            log.error(f"watchdog: stale threads {stale} — withholding sd_notify")
+        else:
+            _sd_notify("WATCHDOG=1")
         time.sleep(30)
+
+# ===================== THREAD LIVENESS =====================
+# Loops beat each iteration; the watchdog withholds its systemd heartbeat
+# while any loop is stale, so a wedged telegram/reconciler/notify/countdown
+# thread gets restarted instead of silently wedged. The webhook server is
+# request-driven (idle = healthy), so it is deliberately not tracked here.
+_hb_lock = threading.Lock()
+_heartbeats = {}
+WATCHDOG_STALE_SEC = 120
+
+
+def _beat(name):
+    with _hb_lock:
+        _heartbeats[name] = time.time()
+
+
+def _watchdog_stale(now=None, stale_after=WATCHDOG_STALE_SEC):
+    """Names of loop threads with no recent heartbeat (missing = stale)."""
+    now = now if now is not None else time.time()
+    with _hb_lock:
+        beats = dict(_heartbeats)
+    return [n for n in ("reconciler", "telegram", "notify", "countdown")
+            if beats.get(n) is None or now - beats[n] > stale_after]
 
 # ===================== HTTP HELPERS =====================
 def _urlopen(url, timeout=5, data=None, method="GET"):
@@ -701,6 +731,7 @@ def _deliver(text, urgent):
 def _notify_worker():
     global _info_pending
     while True:
+        _beat("notify")
         _wake_event.wait(2)
         _wake_event.clear()
         while True:
@@ -842,6 +873,7 @@ def reconcile_once():
 def reconciler_loop():
     log.info("reconciler started")
     while True:
+        _beat("reconciler")
         reconcile_once()
         time.sleep(POLL_INTERVAL)
 
@@ -1068,6 +1100,7 @@ def _tg_get(path, params):
 def _tg_poll():
     offset = _load_tg_offset()
     while True:
+        _beat("telegram")
         try:
             data = _tg_get("getUpdates", {"timeout": TG_POLL_TIMEOUT, "offset": offset + 1})
             if not data.get("ok"):
@@ -1280,6 +1313,7 @@ def countdown_updater():
     """Live countdown card: ONE message edited in place at an adaptive cadence."""
     log.info("countdown updater started")
     while True:
+        _beat("countdown")
         _expire_pending_confirmations()
         _countdown_tick()
         _status_live_tick()
@@ -1306,6 +1340,8 @@ def main():
     _load_seq()
     _load_counters()
     _load_outage()
+    for _t in ("reconciler", "telegram", "notify", "countdown"):
+        _beat(_t)
     _sd_notify("READY=1")
     threading.Thread(target=watchdog_thread, daemon=True).start()
     threading.Thread(target=reconciler_loop, daemon=True).start()

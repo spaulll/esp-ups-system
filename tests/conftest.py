@@ -117,6 +117,8 @@ def _clean(pm):
     pm._status_last_sent = 0
     pm._cd_msg_id = None
     pm._cd_last_sent = 0
+    with pm._hb_lock:
+        pm._heartbeats.clear()
     yield
 
 
