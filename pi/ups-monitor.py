@@ -243,6 +243,39 @@ def fmt_downtime(secs):
     h, m = divmod(m, 60)
     return f"{h}h {m}m"
 
+def _human_reason(label):
+    """Map internal trigger names to plain-language Reason lines.
+
+    Verification messages used to expose raw event keys
+    ("Trigger: shutdown_mains_start") — cryptic on a phone. This keeps
+    the cause but in human words, with the live delay so "more than
+    X min" always matches the configured threshold.
+    """
+    try:
+        with _lock:
+            s = dict(_esp32_state)
+    except Exception:
+        s = {}
+    if label == "shutdown_mains_start":
+        try:
+            mins = int((s.get("mainsDelayMs") or MAINS_DELAY_DEFAULT_MIN * 60000) // 60000)
+        except Exception:
+            mins = MAINS_DELAY_DEFAULT_MIN
+        return f"Reason: Mains power was down for more than {mins} min"
+    if label == "shutdown_wan_start":
+        try:
+            mins = int((s.get("wanTimeoutMs") or WAN_TIMEOUT_DEFAULT_MIN * 60000) // 60000)
+        except Exception:
+            mins = WAN_TIMEOUT_DEFAULT_MIN
+        return f"Reason: Internet was down for more than {mins} min"
+    if label == "shutdown_manual_start":
+        return "Reason: Manual shutdown requested (/off)"
+    if label == "online_confirmed":
+        return "Reason: Server was woken and is responding again"
+    # fallback: prettify any future/unknown trigger instead of leaking snake_case
+    pretty = str(label).replace("_", " ").strip() or "unknown"
+    return f"Reason: {pretty}"
+
 def pve_verify(expect_up, label, timeout_sec=180, interval=10):
     """Confirm offline/online via the PVE API (never TCP alone), background thread."""
     def run():
@@ -252,16 +285,16 @@ def pve_verify(expect_up, label, timeout_sec=180, interval=10):
             if expect_up and online:
                 notify_event("system_info", "info",
                              f"✅ <b>Proxmox Confirmed Online</b>\n\n"
-                             f"Trigger: {label}\n⌚ Uptime: {up_str}")
+                             f"{_human_reason(label)}\n⌚ Uptime: {up_str}")
                 return
             if not expect_up and not online:
                 notify_event("system_info", "info",
-                             f"✅ <b>Proxmox Confirmed Offline</b>\n\nTrigger: {label}")
+                             f"✅ <b>Proxmox Confirmed Offline</b>\n\n{_human_reason(label)}")
                 return
             time.sleep(interval)
         state_word = "online" if expect_up else "offline"
         notify_event("system_info", "critical",
-                     f"⚠️ <b>Verification Timeout</b>\n\nTrigger: {label}\n"
+                     f"⚠️ <b>Verification Timeout</b>\n\n{_human_reason(label)}\n"
                      f"Proxmox did not confirm {state_word} within {timeout_sec}s.")
     threading.Thread(target=run, daemon=True).start()
 
