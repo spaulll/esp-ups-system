@@ -916,6 +916,7 @@ TG_COMMANDS = [
     {"command": "off", "description": "Shut the server down"},
     {"command": "mainsdelay", "description": "Set power-loss shutdown delay (1-720 min)"},
     {"command": "wantimeout", "description": "Set internet-loss shutdown delay (5-120 min)"},
+    {"command": "missed", "description": "Show alerts that failed delivery"},
 ]
 
 
@@ -1179,6 +1180,24 @@ def cmd_off():
             " actually offline.")
 
 
+def cmd_missed():
+    """Show alerts that reached neither Telegram nor ntfy (newest first)."""
+    entries = _load_missed().get("missed", [])
+    if not entries:
+        return "✅ No missed notifications — everything got through."
+    lines = ["📭 <b>Missed Notifications</b> (newest first)\n────"]
+    for e in reversed(entries[-10:]):
+        try:
+            ts = time.strftime("%m-%d %H:%M", time.localtime(float(e.get("at", 0))))
+        except Exception:
+            ts = "--"
+        text = _strip_html(str(e.get("text", ""))).replace("\n", " ")
+        if len(text) > 160:
+            text = text[:160] + "…"
+        lines.append(f"• <code>{ts}</code> {html.escape(text)}")
+    return "\n".join(lines)
+
+
 def handle_command(cmd, arg):
     global _status_msg_id, _status_last_sent
     if cmd == "/status":
@@ -1200,7 +1219,9 @@ def handle_command(cmd, arg):
         return cmd_off()
     if cmd in ("/mainsdelay", "/wantimeout"):
         return cmd_set_delay(cmd.lstrip("/"), arg)
-    return ("Available: /status /diag /on /off "
+    if cmd == "/missed":
+        return cmd_missed()
+    return ("Available: /status /diag /on /off /missed "
             "/mainsdelay [1-720|reset] /wantimeout [5-120|reset]")
 
 def telegram_loop():
