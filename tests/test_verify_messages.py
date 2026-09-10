@@ -46,6 +46,24 @@ def test_human_reason_replaces_trigger(pm):
     assert "10 min" in pm._human_reason("shutdown_wan_start")
 
 
+def test_wan_restored_taxonomy(pm):
+    """fw V7.3 emits wan_restored with downtimeMs — mirrors mains_restored."""
+    klass, fmt = pm.EVENT_TAXONOMY["wan_restored"]
+    assert klass == "critical", f"wan_restored must be immediate, got {klass}"
+    msg = fmt({"data": "downtimeMs=125000"})
+    assert "Internet Restored" in msg, msg
+    assert "2m 5s" in msg, msg
+    # malformed payload degrades gracefully — never crashes the reconciler
+    assert "Internet Restored" in fmt({"data": ""}), fmt({"data": ""})
+    assert "Internet Restored" in fmt({}), fmt({})
+
+
+def test_restored_never_crashes_on_bad_data(pm):
+    _, fmt = pm.EVENT_TAXONOMY["mains_restored"]
+    assert "Power Restored" in fmt({"data": ""})
+    assert "Power Restored" in fmt({})
+
+
 def _seen(pm, needle):
     with pm._notify_lock:
         queued = any(needle in e.get("text", "") for e in pm._notify_queue)

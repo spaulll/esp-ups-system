@@ -408,7 +408,12 @@ EVENT_TAXONOMY = {
     "mains_restored": (
         "critical",
         lambda d: "🟢 <b>Power Restored</b>\n\nUtility power is back."
-                  + (f" It was out for {fmt_downtime(int(d.get('data','0').split('=')[-1])//1000)}." if d.get('data') else "")
+                  + (f" It was out for {_fmt_downtime_span(d)}." if _fmt_downtime_span(d) else "")
+                  + "\nMonitoring back to normal."),
+    "wan_restored": (
+        "critical",
+        lambda d: "🟢 <b>Internet Restored</b>\n\nThe internet connection is back."
+                  + (f" It was out for {_fmt_downtime_span(d)}." if _fmt_downtime_span(d) else "")
                   + "\nMonitoring back to normal."),
     "shutdown_mains_start": (
         "critical",
@@ -524,6 +529,20 @@ def _parse_gpio_test(data):
                 -1: "real input restored"}.get(v, f"value {v}")
     except (TypeError, ValueError):
         return str(data)
+
+
+def _fmt_downtime_span(d):
+    """'downtimeMs=123000' (event dict or raw string) -> '2m 3s'.
+
+    Empty string when unparseable — a malformed ledger payload must
+    degrade to "is back" without downtime, never crash the reconciler.
+    """
+    try:
+        raw = (d.get("data") if isinstance(d, dict) else d) or ""
+        ms = int(str(raw).split("=")[-1])
+        return fmt_downtime(ms // 1000)
+    except Exception:
+        return ""
 
 # events that also trigger PVE verification
 # NB: wake_sequence_start is deliberately NOT here — at wake start the node
