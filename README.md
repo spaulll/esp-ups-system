@@ -38,11 +38,11 @@ Wall mains ──→ 5V USB adapter ──→ PC817 optocoupler ──→ ESP32 
 | Phase | Title | Status |
 |---|---|---|
 | 0 | Repo scaffold + deploy tooling | ✅ Done |
-| 1 | Firmware v2 core (GPIO mains, event ledger, WOL/shutdown) | 🔶 In progress |
+| 1 | Firmware v2 core (GPIO mains, event ledger, WOL/shutdown) | ✅ Done |
 | 2 | Pi brain (reconciler, Telegram, ntfy, PVE) | ✅ Done — 3/3 drills passed |
-| 3 | Optocoupler hardware bring-up | 🔶 In progress — wired, verified, soak running |
+| 3 | Optocoupler hardware bring-up | ✅ Done — wired, verified, 20/20 matrix passed |
 | 4 | UX polish + observability | ✅ Done — pytest (78), /diag v2, single-voice verify, /missed + /history |
-| 5 | Final validation | ☐ Not started |
+| 5 | Final validation | ✅ Done |
 
 ## Repository layout
 

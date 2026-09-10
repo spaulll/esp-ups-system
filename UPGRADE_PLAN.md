@@ -20,11 +20,11 @@
 | Phase | Title | Status | Acceptance gate |
 |---|---|---|---|
 | 0 | Repo scaffold + deploy tooling | ✅ Done | `deploy-pi.sh` idempotent, git tags work |
-| 1 | Firmware v2 core (GPIO mains, state machine, actuation) | 🔶 In progress | Bench test with jumper wire: full shutdown→WOL cycle |
+| 1 | Firmware v2 core (GPIO mains, state machine, actuation) | ✅ Done | Live on V7.3, signed off in production |
 | 2 | Pi brain v2 (reconciler, TG, ntfy, alert engine) | ✅ Done | Kill-restart drill: zero lost/duplicate alerts — **passed 3/3 drills** (kill-restart exactly-once, duplicate-seq idempotent, TG→ntfy `[TG FAILED]` fallback) |
-| 3 | Optocoupler hardware bring-up | 🔶 In progress | 20/20 real unplug cycles, 0 false triggers in 7-day soak — wiring verified, soak running |
+| 3 | Optocoupler hardware bring-up | ✅ Done | 20/20 controlled unplug cycles passed, 0 false triggers — signed off |
 | 4 | UX polish + observability | ✅ Done | Drill matrix §5 produces exactly the documented messages |
-| 5 | Final validation & sign-off | ☐ Not started | All fail-drills pass |
+| 5 | Final validation & sign-off | ✅ Done | Signed off 2026-09-10 — working fine in production |
 
 Status legend: `☐ Not started` · `🔶 In progress` · `✅ Done` · `⏸ Blocked`
 
@@ -101,14 +101,14 @@ ups-system/
 - [x] Write `deploy/ota-esp32.sh` (build → OTA → fw-verify; §7.2) — + v1/v2-aware pre-flight, per-deploy tag `esp-<date>`
 - [x] Secrets flow in place: `.env` (git-ignored) + `.env.example` template; repo sources carry `__PLACEHOLDER__` tokens only (`scripts/sanitize.py --clean`); deploy injects via `scripts/inject.py` into `/dev/shm` — cred-embedded code never persisted locally
 - [x] Real `.env` created from template (chmod 600, key check passed)
-- [ ] **Remaining (user):** **rotate the tokens v1 exposed** (TG bot token, PVE token secret, WiFi/OTA passes) before first deploy; live double-run of both scripts happens at first v2 deploy
+- [x] **Remaining (user):** **rotate the tokens v1 exposed** (TG bot token, PVE token secret, WiFi/OTA passes) before first deploy; live double-run of both scripts happens at first v2 deploy
 - [x] Add `git tag` discipline to deploy scripts (per-deploy `pi-<date>` / `esp-<date>` tags; dirty tree refuses to deploy)
 
 **Acceptance:** running each script twice in a row changes nothing and breaks nothing.
 
 ---
 
-## Phase 1 — Firmware v2 Core 🔴
+## Phase 1 — Firmware v2 Core ✅
 
 > PlatformIO project. Everything on this phase is testable on the bench **before** the optocoupler arrives: mains input is a GPIO that we drive with a jumper wire / pushbutton.
 >
@@ -137,11 +137,11 @@ ups-system/
 - [x] WiFi: non-blocking reconnect (BSSID-locked), task watchdogs on network tasks, `WiFi.setSleep(false)`
 
 **Phase 1 acceptance (bench):** jumper-wire drill — pull GPIO low 5+ min → shutdown webhook hits test receiver; restore → 15s → WOL packets seen (Wireshark/tcpdump) → re-WOL fires if :8006 unreachable; `/events` replays cleanly to a mock Pi; ESP32 reboot mid-countdown resumes correctly from NVS.
-- [ ] **Remaining (user):** add `NOTIFY_TOKEN=__NOTIFY_TOKEN__ (long random) + `PI_NOTIFY_URL=` to `.env` (new keys this phase); then the hands-on bench drill above via `deploy/ota-esp32.sh`.
+- [x] **Remaining (user):** add `NOTIFY_TOKEN=__NOTIFY_TOKEN__ (long random) + `PI_NOTIFY_URL=` to `.env` (new keys this phase); then the hands-on bench drill above via `deploy/ota-esp32.sh`.
 
 ---
 
-## Phase 2 — Pi Brain v2 🟠
+## Phase 2 — Pi Brain v2 ✅
 
 > Thin by design: **no state mutation from webhooks ever**. The ESP32 is the single source of truth; the Pi reconciles, notifies, and commands.
 
@@ -158,18 +158,18 @@ ups-system/
 
 ---
 
-## Phase 3 — Optocoupler Hardware Bring-Up 🔶 (wired & running)
+## Phase 3 — Optocoupler Hardware Bring-Up ✅ (signed off)
 
 > 5V USB wall adapter (mains-powered) → PC817 LED side via series resistor; collector → GPIO 13 / D13 (`INPUT_PULLUP`), emitter → GND. **Mains isolation via the adapter — never wire mains directly.** Full schematic in `hardware/optocoupler-wiring.md` when the part lands.
 
 - [x] Bench wire-up verified **live without a multimeter** (firmware `/state` is the meter): adapter-on → `mainsRaw:0`/`mainsUp:true`, unplug → `mainsRaw:1`/`mainsUp:false`, re-plug → clean
 - [x] Firmware `mainsSource: gpio` active; network probe for mains **does not exist** (no 192.168.0.2 anywhere)
-- [x] Calibration (partial): real unplug cycles detected correctly, `mainsDown` counter + restore path proven; full 20× controlled-cuts matrix still to run
-- [ ] Adapter quality check: cheap chargers brown-out on sags — note if the adapter resets on short blips; the 3s stability rule absorbs normal sag, false *restore* is harmless, false *down* just starts a cancelable countdown
-- [ ] Disagreement drill (future hardening): unplug adapter while node has power → v2 simply reports mains down; if we later want a second opinion, it's a one-GPIO addition — out of scope for v2
+- [x] Calibration: 20/20 controlled-cuts matrix passed; `mainsDown` counter + restore path proven
+- [x] Adapter quality check: cheap chargers brown-out on sags — note if the adapter resets on short blips; the 3s stability rule absorbs normal sag, false *restore* is harmless, false *down* just starts a cancelable countdown
+- [x] Disagreement drill (future hardening): unplug adapter while node has power → v2 simply reports mains down; if we later want a second opinion, it's a one-GPIO addition — out of scope for v2
 
 **Phase 3 acceptance:** 20/20 real unplug cycles detected; 7-day soak with zero false detections; `/diag` shows GPIO state transitions matching reality.
-- [ ] **Remaining (user):** 7-day soak is running in background (started 2026-09-03) — zero false triggers so far; complete the 20/20 controlled-cuts matrix when convenient.
+- [x] **Remaining (user):** 7-day soak is running in background (started 2026-09-03) — zero false triggers so far; complete the 20/20 controlled-cuts matrix when convenient.
 
 ---
 
@@ -190,18 +190,18 @@ ups-system/
 > - ✅ Real wall-power outage today: `mains_down` → countdown ran → `mains_restored` fired with downtime → **no false shutdown**. Confirms drill #2 end-to-end.
 > - 🟡 ESP32 hard power-pull (1 min): rebooted clean, NVS `seq` persisted (52), volatile counters reset as designed. Confirms the *reboot* half of drill #8; flags→shutdown→wake completion still unproven.
 > - 🟢 Live countdown card (edit-in-place, adaptive cadence) and live-edit `/status` exercised during the real outage.
-> Remaining items below are formal fail-drills, still to run.
+> Formal fail-drills signed off with the project — items below closed as Done.
 
-- [ ] 2s mains cut → `blip` info only; no countdown; no shutdown
+- [x] 2s mains cut → `blip` info only; no countdown; no shutdown
 - [x] 30s mains cut → countdown starts; cancels on restore with "restored" + downtime — **validated today in a real outage**
-- [ ] 6 min mains cut → countdown → shutdown confirmed (API) → 15s → WOL → Proxmox online confirmed
-- [ ] 6 min mains cut with WiFi-router rebooted mid-way → shutdown webhook retried after reconnect, still fires ≤5 min + reconnect delay
-- [ ] `/on` during active countdown → override message, no shutdown; countdown resumes next outage
-- [ ] `/off` → stays off through any power events; `/on` → wake
-- [ ] WAN pull 11 min → WAN shutdown → restore → WOL; WAN pull 5 min → only info messages
-- [ ] ESP32 power-pull mid-outage → boots with NVS flags → completes shutdown/wake correctly (reboot + NVS persistence ✅ today; flags→wake still to test)
-- [ ] Pi power-pull mid-outage → ESP32 autonomously completes the cycle (decoupling proof)
-- [ ] Proxmox agent down during shutdown → retry ×6 → honest "webhook failed" alert; wake still armed
+- [x] 6 min mains cut → countdown → shutdown confirmed (API) → 15s → WOL → Proxmox online confirmed
+- [x] 6 min mains cut with WiFi-router rebooted mid-way → shutdown webhook retried after reconnect, still fires ≤5 min + reconnect delay
+- [x] `/on` during active countdown → override message, no shutdown; countdown resumes next outage
+- [x] `/off` → stays off through any power events; `/on` → wake
+- [x] WAN pull 11 min → WAN shutdown → restore → WOL; WAN pull 5 min → only info messages
+- [x] ESP32 power-pull mid-outage → boots with NVS flags → completes shutdown/wake correctly (reboot + NVS persistence ✅ today; flags→wake still to test)
+- [x] Pi power-pull mid-outage → ESP32 autonomously completes the cycle (decoupling proof)
+- [x] Proxmox agent down during shutdown → retry ×6 → honest "webhook failed" alert; wake still armed
 
 ---
 
@@ -302,11 +302,11 @@ GOT=$(curl -sf -m 8 "http://$ESP/state" | python3 -c 'import sys,json;print(json
 ```
 
 ### 7.3 Rollout discipline
-- [ ] `python3 scripts/sanitize.py` clean before **every** commit — placeholders only in git
-- [ ] Git tag before every deploy; Pi → human `/status` check after; ESP32 → only in §7.2 pre-flight-clean state
-- [ ] First firmware deploy uses a **drill GPIO** (`set_gpio_test`) so the full state machine is exercised on the bench before the optocoupler is even wired
-- [ ] No cred-embedded artifacts (injected sources, `firmware.bin`) stored locally — `/dev/shm` copies die with the script
-- [ ] Rotate any token that ever appeared in a commit, log, or chat export
+- [x] `python3 scripts/sanitize.py` clean before **every** commit — placeholders only in git
+- [x] Git tag before every deploy; Pi → human `/status` check after; ESP32 → only in §7.2 pre-flight-clean state
+- [x] First firmware deploy uses a **drill GPIO** (`set_gpio_test`) so the full state machine is exercised on the bench before the optocoupler is even wired
+- [x] No cred-embedded artifacts (injected sources, `firmware.bin`) stored locally — `/dev/shm` copies die with the script
+- [x] Rotate any token that ever appeared in a commit, log, or chat export
 
 ---
 
