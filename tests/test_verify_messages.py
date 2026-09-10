@@ -58,6 +58,33 @@ def test_wan_restored_taxonomy(pm):
     assert "Internet Restored" in fmt({}), fmt({})
 
 
+def test_wan_restored_below_threshold_dropped_silently(pm, wait_for):
+    """Regression (2026-09-10): a 14s TCP flap produced 'Internet Restored'
+    + a /history 'power' line with no real outage. Sub-60s restores must
+    notify nothing and record nothing."""
+    pm.process_event("shutdown_wan_start", 1, {"event": "shutdown_wan_start"})
+    assert wait_for(lambda: any("No Internet" in d[1]
+                                for d in pm.delivered if d[0] == "tg")), pm.delivered
+    pm.process_event("wan_restored", 2,
+                     {"event": "wan_restored", "data": "downtimeMs=14000"})
+    time.sleep(0.3)
+    assert not any("Internet Restored" in d[1] for d in pm.delivered), pm.delivered
+    assert pm._load_history() == [], "sub-threshold flap must leave no history"
+
+
+def test_wan_restored_above_threshold_alerts(pm, wait_for):
+    pm.process_event("shutdown_wan_start", 1, {"event": "shutdown_wan_start"})
+    assert wait_for(lambda: any("No Internet" in d[1]
+                                for d in pm.delivered if d[0] == "tg")), pm.delivered
+    pm.process_event("wan_restored", 2,
+                     {"event": "wan_restored", "data": "downtimeMs=103199"})
+    assert wait_for(lambda: _seen(pm, "Internet Restored")), pm.delivered
+    msg = _get(pm, "Internet Restored")
+    assert "1m 43s" in msg, msg
+    hist = pm._load_history()
+    assert len(hist) == 1 and hist[0]["cause"] == "wan", hist
+
+
 def test_restored_never_crashes_on_bad_data(pm):
     _, fmt = pm.EVENT_TAXONOMY["mains_restored"]
     assert "Power Restored" in fmt({"data": ""})

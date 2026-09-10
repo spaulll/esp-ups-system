@@ -64,6 +64,10 @@ COUNTERS_FILE = os.path.join(STATE_DIR, "daily-counters.json")
 OUTAGE_FILE  = os.path.join(STATE_DIR, "outage.json")
 HISTORY_FILE = os.path.join(STATE_DIR, "outage-history.json")
 HISTORY_MAX  = 10
+# Sub-WAN_ALERT_MIN_SEC restores are local TCP flaps, not user-meaningful
+# outages (DNS hiccups, single-poll blips). Dropped silently — never notified,
+# never recorded in /history.
+WAN_ALERT_MIN_SEC = 60
 LOG_FILE     = "/var/log/ups-monitor.log"
 # ============================================================================
 
@@ -390,14 +394,28 @@ def _history_open(cause, shutdown=False):
     _save_history(entries)
 
 
-def _history_close(downtime_sec=None):
-    """Close the open outage entry, if any. Unknown span stays honest."""
+def _history_close(downtime_sec=None, min_sec=0):
+    """Close the open outage entry, if any.
+
+    min_sec drops short flaps entirely (no entry left behind): used for WAN
+    so a 14s TCP hiccup never becomes a /history line. Mains keeps min 0 —
+    every confirmed mains cut is worth recording.
+    Unknown span stays honest.
+    """
     entries = _load_history()
     if entries and entries[-1].get("end") is None:
+        try:
+            span = int(downtime_sec) if downtime_sec is not None else None
+        except Exception:
+            span = None
+        if span is not None and span < min_sec:
+            entries.pop()
+            _save_history(entries)
+            return
         now = time.time()
         entries[-1]["end"] = now
-        if downtime_sec is not None:
-            entries[-1]["downtime_sec"] = int(downtime_sec)
+        if span is not None:
+            entries[-1]["downtime_sec"] = span
         else:
             try:
                 entries[-1]["downtime_sec"] = int(now - float(entries[-1]["start"]))
@@ -523,6 +541,9 @@ EVENT_TAXONOMY = {
                   + (f" It was out for {_fmt_downtime_span(d)}." if _fmt_downtime_span(d) else "")
                   + "\nMonitoring back to normal."),
     "wan_restored": (
+        # Gate is enforced in process_event (sub-threshold drops never reach
+        # here) — this text only renders for real ≥60s outages. Kept
+        # critical so a genuine internet outage+restore is immediate.
         "critical",
         lambda d: "🟢 <b>Internet Restored</b>\n\nThe internet connection is back."
                   + (f" It was out for {_fmt_downtime_span(d)}." if _fmt_downtime_span(d) else "")
@@ -839,6 +860,15 @@ def _maybe_confirm_pending(evt, data):
     return ok
 
 
+def _event_downtime_sec(data):
+    """'downtimeMs=103199' (event dict or raw string) -> 103. None if bad."""
+    try:
+        raw = (data.get("data") if isinstance(data, dict) else data) or ""
+        return int(str(raw).split("=")[-1]) // 1000
+    except Exception:
+        return None
+
+
 def process_event(evt, seq, data):
     global _last_seq
     # Dropped noise: the agent ACK ("Shutdown request accepted") adds no
@@ -847,6 +877,16 @@ def process_event(evt, seq, data):
     if evt == "shutdown_webhook_ok":
         log.debug(f"dropping noisy {evt} (seq={seq})")
         return
+    # Sub-threshold WAN restores are TCP flaps, not user-meaningful outages
+    # (tonight's 14s "Internet Restored" with no outage anyone noticed).
+    # Dropped silently: no message AND no /history entry (the shutdown's
+    # open entry is discarded as a flap, not closed as an outage).
+    if evt == "wan_restored":
+        secs = _event_downtime_sec(data)
+        if secs is not None and secs < WAN_ALERT_MIN_SEC:
+            log.debug(f"dropping sub-threshold {evt} ({secs}s, seq={seq})")
+            _history_close(secs, min_sec=WAN_ALERT_MIN_SEC)
+            return
     taxonomy = EVENT_TAXONOMY.get(evt)
     if not taxonomy:
         log.warning(f"unknown event {evt} (seq={seq})")
@@ -865,12 +905,10 @@ def process_event(evt, seq, data):
         _history_open("wan", shutdown=True)
     elif evt == "shutdown_manual_start":
         _history_open("manual", shutdown=True)
-    elif evt in ("mains_restored", "wan_restored"):
-        try:
-            raw = (data.get("data") if isinstance(data, dict) else data) or ""
-            _history_close(int(str(raw).split("=")[-1]) // 1000)
-        except Exception:
-            _history_close()
+    elif evt == "mains_restored":
+        _history_close(_event_downtime_sec(data))
+    elif evt == "wan_restored":
+        _history_close(_event_downtime_sec(data), min_sec=WAN_ALERT_MIN_SEC)
     if evt in VERIFY_ONLINE:
         # Single online voice: the ESP's own liveness message would double
         # the PVE-verified confirmation minutes later. Verify (which notifies)
