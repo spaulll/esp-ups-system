@@ -23,7 +23,7 @@
 | 1 | Firmware v2 core (GPIO mains, state machine, actuation) | 🔶 In progress | Bench test with jumper wire: full shutdown→WOL cycle |
 | 2 | Pi brain v2 (reconciler, TG, ntfy, alert engine) | ✅ Done | Kill-restart drill: zero lost/duplicate alerts — **passed 3/3 drills** (kill-restart exactly-once, duplicate-seq idempotent, TG→ntfy `[TG FAILED]` fallback) |
 | 3 | Optocoupler hardware bring-up | 🔶 In progress | 20/20 real unplug cycles, 0 false triggers in 7-day soak — wiring verified, soak running |
-| 4 | UX polish + observability | ☐ Not started | Drill matrix §5 produces exactly the documented messages |
+| 4 | UX polish + observability | ✅ Done | Drill matrix §5 produces exactly the documented messages |
 | 5 | Final validation & sign-off | ☐ Not started | All fail-drills pass |
 
 Status legend: `☐ Not started` · `🔶 In progress` · `✅ Done` · `⏸ Blocked`
@@ -176,9 +176,9 @@ ups-system/
 ## Phase 4 — UX Polish + Observability
 
 - [x] Message taxonomy (Appendix A) enforced from a single severity table — TG formatting and ntfy priority derived from it (`EVENT_TAXONOMY` in `pi/ups-monitor.py`, verified by pytest)
-- [x] pytest in `tests/`: event classification, coalescer, reconciler seq logic, command parsing (no hardware needed, runs in builder LXC / CI) — 24 tests green
+- [x] pytest in `tests/`: event classification, coalescer, reconciler seq logic, command parsing (no hardware needed, runs in builder LXC / CI) — 78 tests green
 - [x] Daily counters survive Pi restarts (already file-backed) and date-rollover correctly (`_load_counters`/`_bump_counter` reset-on-rollover, pytest-covered)
-- [ ] `/diag` v2 remaining: GPIO last-change age + WOL attempt stats (firmware `mainsStableSinceMs` field + expose WOL stats — small Phase-5-prep addition, not blocking)
+- [x] `/diag` v2: GPIO last-change age (`mainsStableSinceMs` → "last change Xm") + WOL attempt stats (`wolAttempts` this cycle, `wolRexmit` counter) — live in `cmd_diag`, pytest-covered
 
 **Phase 4 acceptance:** every drill scenario in §5 maps 1:1 to a documented, bounded message set.
 
