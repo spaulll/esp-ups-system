@@ -61,6 +61,7 @@ SEQ_FILE     = os.path.join(STATE_DIR, "last-seq.json")
 TG_OFFSET    = os.path.join(STATE_DIR, "tg-offset.json")
 MISSED_FILE  = os.path.join(STATE_DIR, "missed-ledger.json")
 COUNTERS_FILE = os.path.join(STATE_DIR, "daily-counters.json")
+OUTAGE_FILE  = os.path.join(STATE_DIR, "outage.json")
 LOG_FILE     = "/var/log/ups-monitor.log"
 # ============================================================================
 
@@ -284,19 +285,51 @@ def _human_reason(label):
     return f"Reason: {pretty}"
 
 def _remember_outage(evt, data):
-    """Stamp outage timing for the later online confirmation."""
+    """Stamp outage timing for the later online confirmation.
+
+    Persisted to OUTAGE_FILE: a Pi restart mid-outage must not lose the
+    start stamp the online message's total-downtime math needs.
+    """
     global _last_mains_down_at, _last_mains_downtime_sec
+    changed = False
     if evt == "mains_down":
         with _lock:
             _last_mains_down_at = time.time()
+        changed = True
     elif evt == "mains_restored":
         try:
             raw = (data.get("data") if isinstance(data, dict) else data) or ""
             ms = int(str(raw).split("=")[-1])
             with _lock:
                 _last_mains_downtime_sec = ms // 1000
+            changed = True
         except Exception:
             pass
+    if changed:
+        _save_outage()
+
+
+def _load_outage():
+    """Restore outage timing after a Pi restart (missing/corrupt -> blank)."""
+    global _last_mains_down_at, _last_mains_downtime_sec
+    data = _load_json(OUTAGE_FILE, {})
+    _last_mains_down_at = data.get("down_at")
+    _last_mains_downtime_sec = data.get("downtime_sec")
+    try:
+        if _last_mains_down_at is not None and float(_last_mains_down_at) > time.time():
+            _last_mains_down_at = None
+        if _last_mains_downtime_sec is not None and int(_last_mains_downtime_sec) < 0:
+            _last_mains_downtime_sec = None
+    except Exception:
+        _last_mains_down_at = None
+        _last_mains_downtime_sec = None
+
+
+def _save_outage():
+    with _lock:
+        data = {"down_at": _last_mains_down_at,
+                "downtime_sec": _last_mains_downtime_sec}
+    _save_json(OUTAGE_FILE, data)
 
 def _consume_outage_line():
     """Total mains downtime for the online message, once. Empty if unknown.
@@ -312,6 +345,7 @@ def _consume_outage_line():
         fallback = _last_mains_downtime_sec
         _last_mains_down_at = None
         _last_mains_downtime_sec = None
+    _save_outage()
     if start is not None:
         secs = int(time.time() - start)
         if secs >= 5:
@@ -1271,6 +1305,7 @@ def _expire_pending_confirmations():
 def main():
     _load_seq()
     _load_counters()
+    _load_outage()
     _sd_notify("READY=1")
     threading.Thread(target=watchdog_thread, daemon=True).start()
     threading.Thread(target=reconciler_loop, daemon=True).start()

@@ -77,6 +77,7 @@ def pm():
     mod.TG_OFFSET = os.path.join(mod.STATE_DIR, "tg-offset.json")
     mod.MISSED_FILE = os.path.join(mod.STATE_DIR, "missed-ledger.json")
     mod.COUNTERS_FILE = os.path.join(mod.STATE_DIR, "daily-counters.json")
+    mod.OUTAGE_FILE = os.path.join(mod.STATE_DIR, "outage.json")
 
     # single worker for the whole session — avoids double-delivery races
     t = threading.Thread(target=mod._notify_worker, daemon=True)
@@ -99,6 +100,12 @@ def _clean(pm):
                       ("_last_mains_downtime_sec", None)):
         if hasattr(pm, attr):
             setattr(pm, attr, val)
+    for f in (getattr(pm, "OUTAGE_FILE", None),):
+        if f:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
     pm._tg_send_msg_calls.clear()
     pm._tg_edit_msg_calls.clear()
     with pm._notify_lock:
