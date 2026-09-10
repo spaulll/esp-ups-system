@@ -91,6 +91,13 @@ _sensor_dead_since = None
 _sensor_blind_announced = False
 _daily_counters = {"date": None, "mains_down": 0, "shutdowns": 0, "blips": 0}
 
+# outage tracking for the online confirmation: mains_down stamps the start,
+# mains_restored stashes its downtimeMs as fallback (firmware skips the
+# restored event while the node is down, so the wake path usually needs the
+# computed start->online span). Consumed once by the online verify.
+_last_mains_down_at = None
+_last_mains_downtime_sec = None
+
 # notification engine
 _notify_queue = []          # list of (event_key, class, payload_dict)
 _notify_lock  = threading.Lock()
@@ -276,6 +283,43 @@ def _human_reason(label):
     pretty = str(label).replace("_", " ").strip() or "unknown"
     return f"Reason: {pretty}"
 
+def _remember_outage(evt, data):
+    """Stamp outage timing for the later online confirmation."""
+    global _last_mains_down_at, _last_mains_downtime_sec
+    if evt == "mains_down":
+        with _lock:
+            _last_mains_down_at = time.time()
+    elif evt == "mains_restored":
+        try:
+            raw = (data.get("data") if isinstance(data, dict) else data) or ""
+            ms = int(str(raw).split("=")[-1])
+            with _lock:
+                _last_mains_downtime_sec = ms // 1000
+        except Exception:
+            pass
+
+def _consume_outage_line():
+    """Total mains downtime for the online message, once. Empty if unknown.
+
+    Prefers the live start->now span (covers shutdown->wake, where firmware
+    never emits mains_restored); falls back to the stashed restored span.
+    Only emitted when a real mains outage was seen — a WAN/manual wake
+    with no mains_down stays silent instead of lying.
+    """
+    global _last_mains_down_at, _last_mains_downtime_sec
+    with _lock:
+        start = _last_mains_down_at
+        fallback = _last_mains_downtime_sec
+        _last_mains_down_at = None
+        _last_mains_downtime_sec = None
+    if start is not None:
+        secs = int(time.time() - start)
+        if secs >= 5:
+            return f"\n⏱ Power was out for {fmt_downtime(secs)} in total."
+    if fallback:
+        return f"\n⏱ Power was out for {fmt_downtime(fallback)} in total."
+    return ""
+
 def pve_verify(expect_up, label, timeout_sec=180, interval=10):
     """Confirm offline/online via the PVE API (never TCP alone), background thread."""
     def run():
@@ -283,9 +327,18 @@ def pve_verify(expect_up, label, timeout_sec=180, interval=10):
         while time.time() - start < timeout_sec:
             online, _uptime_sec, up_str = _pve_probe()
             if expect_up and online:
+                outage_line = _consume_outage_line()
+                # Fresh boot reports 0m/1m uptime — noise, not information.
+                # Show uptime only once the node has been up a while.
+                uptime_line = ""
+                try:
+                    if _uptime_sec is not None and int(_uptime_sec) >= 120:
+                        uptime_line = f"\n⌚ Uptime: {up_str}"
+                except Exception:
+                    uptime_line = ""
                 notify_event("system_info", "info",
                              f"✅ <b>Proxmox Confirmed Online</b>\n\n"
-                             f"{_human_reason(label)}\n⌚ Uptime: {up_str}")
+                             f"{_human_reason(label)}{outage_line}{uptime_line}")
                 return
             if not expect_up and not online:
                 notify_event("system_info", "info",
@@ -662,6 +715,7 @@ def process_event(evt, seq, data):
     if _maybe_confirm_pending(evt, data):
         return
     klass, fmt = taxonomy
+    _remember_outage(evt, data)
     if evt == "mains_down":
         _bump_counter("mains_down")
     elif evt == "mains_blip":

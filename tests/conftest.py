@@ -95,6 +95,10 @@ def _clean(pm):
     pm._last_seq = 0
     pm._sensor_dead_since = None
     pm._sensor_blind_announced = False
+    for attr, val in (("_last_mains_down_at", None),
+                      ("_last_mains_downtime_sec", None)):
+        if hasattr(pm, attr):
+            setattr(pm, attr, val)
     pm._tg_send_msg_calls.clear()
     pm._tg_edit_msg_calls.clear()
     with pm._notify_lock:
