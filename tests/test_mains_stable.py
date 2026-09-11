@@ -87,5 +87,76 @@ def test_reload_restores_stamp(pm):
     pm.process_event("mains_down", 1, {"event": "mains_down", "data": "mins=10"})
     saved = pm._mains_last_change
     pm._mains_last_change = None
+    pm._mains_last_src = None
     pm._load_mains_stable()
     assert pm._mains_last_change == saved
+
+
+def _seed_history(pm, entries):
+    import json
+    with open(pm.HISTORY_FILE, "w") as f:
+        json.dump(entries, f)
+
+
+def test_backfill_uses_newest_mains_end(pm):
+    now = time.time()
+    _seed_history(pm, [
+        {"start": now - 15000, "end": now - 14600,
+         "cause": "mains", "shutdown": False, "downtime_sec": 341},
+        {"start": now - 3000, "end": now - 2934,
+         "cause": "mains", "shutdown": False, "downtime_sec": 66},
+        {"start": now - 600, "end": now - 586,
+         "cause": "wan", "shutdown": False, "downtime_sec": 14},
+    ])
+    pm._load_mains_stable()
+    assert pm._mains_last_change is not None
+    assert abs(pm._mains_last_change - (now - 2934)) < 5
+    assert pm._mains_last_src == "history"
+
+
+def test_backfill_open_entry_uses_start(pm):
+    now = time.time()
+    _seed_history(pm, [
+        {"start": now - 120, "end": None,
+         "cause": "mains", "shutdown": False, "downtime_sec": None},
+    ])
+    pm._load_mains_stable()
+    assert abs(pm._mains_last_change - (now - 120)) < 5
+
+
+def test_backfill_skips_non_mains(pm):
+    now = time.time()
+    _seed_history(pm, [
+        {"start": now - 600, "end": now - 586,
+         "cause": "wan", "shutdown": False, "downtime_sec": 14},
+    ])
+    pm._load_mains_stable()
+    assert pm._mains_last_change is None
+
+
+def test_history_upgrades_seeded_guess(pm):
+    # yesterday's deploy seeded from boot age; history holds the truth
+    now = time.time()
+    _seed_history(pm, [
+        {"start": now - 4000, "end": now - 3600,
+         "cause": "mains", "shutdown": False, "downtime_sec": 219},
+    ])
+    import json
+    with open(pm.MAINS_STABLE_FILE, "w") as f:
+        json.dump({"at": now - 60}, f)  # old format, no src -> seed
+    pm._load_mains_stable()
+    assert abs(pm._mains_last_change - (now - 3600)) < 5
+    assert pm._mains_last_src == "history"
+
+
+def test_event_stamp_beats_history(pm):
+    now = time.time()
+    _seed_history(pm, [
+        {"start": now - 4000, "end": now - 3600,
+         "cause": "mains", "shutdown": False, "downtime_sec": 219},
+    ])
+    import json
+    with open(pm.MAINS_STABLE_FILE, "w") as f:
+        json.dump({"at": now - 60, "src": "event"}, f)
+    pm._load_mains_stable()
+    assert abs(pm._mains_last_change - (now - 60)) < 5
