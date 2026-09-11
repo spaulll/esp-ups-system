@@ -97,6 +97,7 @@ def _clean(pm):
     pm._esp32_state.clear()
     pm._last_seq = 0
     pm._mains_last_change = None
+    pm._mains_last_src = None
     pm._sensor_dead_since = None
     pm._sensor_blind_announced = False
     for attr, val in (("_last_mains_down_at", None),

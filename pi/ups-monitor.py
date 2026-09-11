@@ -115,6 +115,7 @@ _last_mains_downtime_sec = None
 # reboot/OTA, so /diag's "last change" needs a Pi-side stamp to survive.
 # Stamped at event-processing time (replay included — bounded skew).
 _mains_last_change = None
+_mains_last_src = None
 # Poll skew budget for the reconcile heal below (poll is 15s + jitter).
 _STABLE_SKEW_SEC = 30
 
@@ -390,29 +391,64 @@ def _save_outage():
     _save_json(OUTAGE_FILE, data)
 
 # ===================== MAINS LAST-CHANGE (persisted) =====================
+# src provenance: "event" (exact transition stamp) and "history" (same
+# transition's recorded end) are facts; "seed" (ESP boot age guess) loses
+# to facts at load. Old files without src count as "seed".
 def _load_mains_stable():
-    """Restore the last-transition stamp after a Pi restart (bad -> blank)."""
-    global _mains_last_change
+    """Restore the last-transition stamp after a Pi restart.
+
+    Missing file, or a seeded guess with history facts available ->
+    backfill from /history's newest mains entry (bad -> blank, ESP poll
+    seeds later).
+    """
+    global _mains_last_change, _mains_last_src
     try:
-        at = _load_json(MAINS_STABLE_FILE, {}).get("at")
+        data = _load_json(MAINS_STABLE_FILE, {})
+        at = data.get("at")
         _mains_last_change = float(at) if at is not None else None
-        if _mains_last_change is not None and _mains_last_change > time.time():
+        _mains_last_src = data.get("src", "seed")
+        if _mains_last_change is not None and not (0 < _mains_last_change <= time.time()):
             _mains_last_change = None
     except Exception:
         _mains_last_change = None
+        _mains_last_src = None
+    if _mains_last_change is None or _mains_last_src == "seed":
+        hist_at = _backfill_mains_stable_from_history()
+        if hist_at is not None:
+            with _lock:
+                _mains_last_change = hist_at
+                _mains_last_src = "history"
+            _save_mains_stable()
+
+
+def _backfill_mains_stable_from_history():
+    """Newest mains entry's end (restore) — or start if still open."""
+    try:
+        now = time.time()
+        for e in reversed(_load_history()):
+            if not isinstance(e, dict) or e.get("cause") != "mains":
+                continue
+            at = e.get("end") or e.get("start")
+            at = float(at)
+            return at if 0 < at <= now else None
+        return None
+    except Exception:
+        return None
 
 
 def _save_mains_stable():
     with _lock:
         at = _mains_last_change
-    _save_json(MAINS_STABLE_FILE, {"at": at})
+        src = _mains_last_src
+    _save_json(MAINS_STABLE_FILE, {"at": at, "src": src})
 
 
 def _note_mains_change():
     """Stamp a confirmed mains transition (down or restored)."""
-    global _mains_last_change
+    global _mains_last_change, _mains_last_src
     with _lock:
         _mains_last_change = time.time()
+        _mains_last_src = "event"
     _save_mains_stable()
 
 
@@ -424,8 +460,9 @@ def _track_mains_stable_from_esp(state):
     the post-boot age: after an ESP reboot E ~= uptime, which looks
     "newer" but is just the reboot — only a real post-boot transition
     (E clearly below uptime) newer than our record is adopted.
+    Seeds carry src="seed" so history facts upgrade them at next load.
     """
-    global _mains_last_change
+    global _mains_last_change, _mains_last_src
     try:
         stable_ms = state.get("mainsStableSinceMs", -1)
         up_ms = state.get("espUptimeMs", 0)
@@ -441,10 +478,12 @@ def _track_mains_stable_from_esp(state):
         if cur is None:
             with _lock:
                 _mains_last_change = now - esp_age
+                _mains_last_src = "seed"
             _save_mains_stable()
         elif esp_age < uptime - _STABLE_SKEW_SEC and (now - esp_age) > cur + _STABLE_SKEW_SEC:
             with _lock:
                 _mains_last_change = now - esp_age
+                _mains_last_src = "seed"
             _save_mains_stable()
     except Exception as e:
         log.warning(f"mains stable track failed: {e}")
