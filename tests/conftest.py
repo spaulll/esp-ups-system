@@ -79,6 +79,7 @@ def pm():
     mod.COUNTERS_FILE = os.path.join(mod.STATE_DIR, "daily-counters.json")
     mod.OUTAGE_FILE = os.path.join(mod.STATE_DIR, "outage.json")
     mod.HISTORY_FILE = os.path.join(mod.STATE_DIR, "outage-history.json")
+    mod.MAINS_STABLE_FILE = os.path.join(mod.STATE_DIR, "mains-stable.json")
 
     # single worker for the whole session — avoids double-delivery races
     t = threading.Thread(target=mod._notify_worker, daemon=True)
@@ -95,6 +96,7 @@ def _clean(pm):
     pm.ntfy_fail = False
     pm._esp32_state.clear()
     pm._last_seq = 0
+    pm._mains_last_change = None
     pm._sensor_dead_since = None
     pm._sensor_blind_announced = False
     for attr, val in (("_last_mains_down_at", None),
@@ -103,7 +105,8 @@ def _clean(pm):
         if hasattr(pm, attr):
             setattr(pm, attr, val)
     for f in (getattr(pm, "OUTAGE_FILE", None),
-              getattr(pm, "HISTORY_FILE", None)):
+              getattr(pm, "HISTORY_FILE", None),
+              getattr(pm, "MAINS_STABLE_FILE", None)):
         if f:
             try:
                 os.remove(f)
