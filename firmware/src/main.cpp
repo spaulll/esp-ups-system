@@ -19,7 +19,7 @@ const char* WIFI_SSID            = "__WIFI_SSID__";
 const char* WIFI_PASS            = "__WIFI_PASS__";
 const uint8_t MAIN_ROUTER_BSSID[] = __WIFI_BSSID_BYTES__;
 const char* OTA_PASSWORD         = "__OTA_PASSWORD__";
-const char* FW_VERSION           = "V7.4";
+const char* FW_VERSION           = "V7.5";
 
 const char* PROXMOX_IP           = "__PROXMOX_IP__";
 const char* SHUTDOWN_URL         = "__PROXMOX_SHUTDOWN_URL__";
@@ -488,6 +488,9 @@ void mainsCheckTask(void* pv) {
   int raw = digitalRead(MAINS_SENSE_PIN);
   int stableLevel = raw;
   unsigned long levelSince = millis();
+  portENTER_CRITICAL(&cacheMux);
+  mainsStableSince = levelSince;
+  portEXIT_CRITICAL(&cacheMux);
   bool highActive = (raw == HIGH);
   unsigned long highAt = highActive ? levelSince : 0;
   for (;;) {
@@ -672,7 +675,10 @@ void handleGetState() {
   JsonDocument d;
   d["mainsRaw"] = raw;
   d["mainsUp"] = mUp;
-  d["mainsStableSinceMs"] = stableSince ? (now - stableSince) : -1;
+  // NB: cast to signed BEFORE serialize — plain `: -1` in the ternary
+  // promotes to unsigned long (0xFFFFFFFF = 1193h 2m on the Pi).
+  long stableAgeMs = stableSince ? (long)(now - stableSince) : -1L;
+  d["mainsStableSinceMs"] = stableAgeMs;
   d["wanUp"] = wUp;
   d["sdMains"] = sdMains;
   d["sdWAN"] = sdWAN;

@@ -1252,7 +1252,9 @@ def cmd_diag():
         lines.append(f"🧩 <b>Sensor</b>  {fw} · {up} up · {reset}")
         lines.append(f"📶 <b>WiFi</b>    {rssi}")
         stable_ms = s.get("mainsStableSinceMs", -1)
-        age = fmt_downtime(stable_ms // 1000) if isinstance(stable_ms, (int, float)) and stable_ms >= 0 else "unknown"
+        # NB: pre-V7.5 firmware sent 0xFFFFFFFF (unsigned -1) when no GPIO
+        # transition had happened since boot → 1193h 2m. Clamp it to unknown.
+        age = fmt_downtime(stable_ms // 1000) if isinstance(stable_ms, (int, float)) and 0 <= stable_ms < 2**31 else "unknown"
         lines.append(f"🟢 <b>Mains</b>   {'UP' if s.get('mainsUp') else 'DOWN'} · last change {age}")
         lines.append(f"🟢 <b>WAN</b>     {'UP' if s.get('wanUp') else 'DOWN'}" + (" · checking…" if (not s.get("wanUp") and s.get("wanSuspect") and not s.get("sdWAN")) else ""))
         lines.append(f"🟢 <b>Node</b>    {'ONLINE' if prox_online else 'OFFLINE'}" + (f" · {prox_up}" if prox_online else ""))
