@@ -63,6 +63,7 @@ MISSED_FILE  = os.path.join(STATE_DIR, "missed-ledger.json")
 COUNTERS_FILE = os.path.join(STATE_DIR, "daily-counters.json")
 OUTAGE_FILE  = os.path.join(STATE_DIR, "outage.json")
 HISTORY_FILE = os.path.join(STATE_DIR, "outage-history.json")
+MAINS_STABLE_FILE = os.path.join(STATE_DIR, "mains-stable.json")
 HISTORY_MAX  = 10
 # Sub-WAN_ALERT_MIN_SEC restores are local TCP flaps, not user-meaningful
 # outages (DNS hiccups, single-poll blips). Dropped silently — never notified,
@@ -107,6 +108,15 @@ _daily_counters = {"date": None, "mains_down": 0, "shutdowns": 0, "blips": 0}
 # computed start->online span). Consumed once by the online verify.
 _last_mains_down_at = None
 _last_mains_downtime_sec = None
+
+# Wall-clock of the last CONFIRMED mains transition (mains_down or
+# mains_restored, i.e. GPIO stable ≥3s — blips excluded). Persisted to
+# MAINS_STABLE_FILE: the ESP's own age is RAM-only and resets on every
+# reboot/OTA, so /diag's "last change" needs a Pi-side stamp to survive.
+# Stamped at event-processing time (replay included — bounded skew).
+_mains_last_change = None
+# Poll skew budget for the reconcile heal below (poll is 15s + jitter).
+_STABLE_SKEW_SEC = 30
 
 # WAN double-check bookkeeping: True once the Pi has confirmed (or adopted)
 # the current WAN outage and alerted the user. Guards against double alerts
@@ -378,6 +388,66 @@ def _save_outage():
         data = {"down_at": _last_mains_down_at,
                 "downtime_sec": _last_mains_downtime_sec}
     _save_json(OUTAGE_FILE, data)
+
+# ===================== MAINS LAST-CHANGE (persisted) =====================
+def _load_mains_stable():
+    """Restore the last-transition stamp after a Pi restart (bad -> blank)."""
+    global _mains_last_change
+    try:
+        at = _load_json(MAINS_STABLE_FILE, {}).get("at")
+        _mains_last_change = float(at) if at is not None else None
+        if _mains_last_change is not None and _mains_last_change > time.time():
+            _mains_last_change = None
+    except Exception:
+        _mains_last_change = None
+
+
+def _save_mains_stable():
+    with _lock:
+        at = _mains_last_change
+    _save_json(MAINS_STABLE_FILE, {"at": at})
+
+
+def _note_mains_change():
+    """Stamp a confirmed mains transition (down or restored)."""
+    global _mains_last_change
+    with _lock:
+        _mains_last_change = time.time()
+    _save_mains_stable()
+
+
+def _track_mains_stable_from_esp(state):
+    """Heal the stamp from ESP polls (backup to the event path).
+
+    Covers first run with no events yet (seed from ESP age) and
+    transitions lost to an event_log_gap (ring overwrite). Never adopts
+    the post-boot age: after an ESP reboot E ~= uptime, which looks
+    "newer" but is just the reboot — only a real post-boot transition
+    (E clearly below uptime) newer than our record is adopted.
+    """
+    global _mains_last_change
+    try:
+        stable_ms = state.get("mainsStableSinceMs", -1)
+        up_ms = state.get("espUptimeMs", 0)
+        if not isinstance(stable_ms, (int, float)) or not isinstance(up_ms, (int, float)):
+            return
+        if not (0 <= stable_ms < 2**31) or up_ms < 0:
+            return
+        now = time.time()
+        esp_age = stable_ms / 1000.0
+        uptime = up_ms / 1000.0
+        with _lock:
+            cur = _mains_last_change
+        if cur is None:
+            with _lock:
+                _mains_last_change = now - esp_age
+            _save_mains_stable()
+        elif esp_age < uptime - _STABLE_SKEW_SEC and (now - esp_age) > cur + _STABLE_SKEW_SEC:
+            with _lock:
+                _mains_last_change = now - esp_age
+            _save_mains_stable()
+    except Exception as e:
+        log.warning(f"mains stable track failed: {e}")
 
 # ===================== OUTAGE HISTORY (last-N, persisted) =====================
 def _load_history():
@@ -1013,6 +1083,8 @@ def process_event(evt, seq, data):
         return
     klass, fmt = taxonomy
     _remember_outage(evt, data)
+    if evt in ("mains_down", "mains_restored"):
+        _note_mains_change()
     if evt == "mains_down":
         _history_open("mains")
     elif evt == "shutdown_mains_start":
@@ -1054,6 +1126,7 @@ def reconcile_once():
                 _esp_state_ts = time.time()
                 _sensor_dead_since = None
                 _sensor_blind_announced = False
+            _track_mains_stable_from_esp(state)
             if announced:
                 notify_event("sensor_back", "info",
                              "🟢 <b>Sensor Back</b>\n\nESP32 reachable again — monitoring resumed.")
@@ -1254,7 +1327,17 @@ def cmd_diag():
         stable_ms = s.get("mainsStableSinceMs", -1)
         # NB: pre-V7.5 firmware sent 0xFFFFFFFF (unsigned -1) when no GPIO
         # transition had happened since boot → 1193h 2m. Clamp it to unknown.
-        age = fmt_downtime(stable_ms // 1000) if isinstance(stable_ms, (int, float)) and 0 <= stable_ms < 2**31 else "unknown"
+        esp_age_ok = isinstance(stable_ms, (int, float)) and 0 <= stable_ms < 2**31
+        with _lock:
+            wall = _mains_last_change
+        if isinstance(wall, (int, float)) and wall <= time.time():
+            # Persisted wall-clock survives ESP reboots/OTAs; the ESP's own
+            # age resets on every boot. Falls back to ESP age below if blank.
+            age = fmt_downtime(int(time.time() - wall))
+        elif esp_age_ok:
+            age = fmt_downtime(stable_ms // 1000)
+        else:
+            age = "unknown"
         lines.append(f"🟢 <b>Mains</b>   {'UP' if s.get('mainsUp') else 'DOWN'} · last change {age}")
         lines.append(f"🟢 <b>WAN</b>     {'UP' if s.get('wanUp') else 'DOWN'}" + (" · checking…" if (not s.get("wanUp") and s.get("wanSuspect") and not s.get("sdWAN")) else ""))
         lines.append(f"🟢 <b>Node</b>    {'ONLINE' if prox_online else 'OFFLINE'}" + (f" · {prox_up}" if prox_online else ""))
@@ -1611,6 +1694,7 @@ def main():
     _load_seq()
     _load_counters()
     _load_outage()
+    _load_mains_stable()
     for _t in ("reconciler", "telegram", "notify", "countdown"):
         _beat(_t)
     _sd_notify("READY=1")
