@@ -68,6 +68,9 @@ HISTORY_MAX  = 10
 # outages (DNS hiccups, single-poll blips). Dropped silently — never notified,
 # never recorded in /history.
 WAN_ALERT_MIN_SEC = 60
+# Per-target budget for the Pi-side WAN double-check (IP probe + web probe
+# run sequentially, so a suspect costs at most ~2x this on the reconciler).
+WAN_PROBE_TIMEOUT = 5
 LOG_FILE     = "/var/log/ups-monitor.log"
 # ============================================================================
 
@@ -104,6 +107,15 @@ _daily_counters = {"date": None, "mains_down": 0, "shutdowns": 0, "blips": 0}
 # computed start->online span). Consumed once by the online verify.
 _last_mains_down_at = None
 _last_mains_downtime_sec = None
+
+# WAN double-check bookkeeping: True once the Pi has confirmed (or adopted)
+# the current WAN outage and alerted the user. Guards against double alerts
+# when the ESP re-emits (reboot -> re-suspect -> re-confirm) and lets a
+# repeat wan_suspect re-arm the ESP quietly instead of re-notifying.
+# Cleared by wan_restored / wan_cleared. In-memory only, like the mains
+# countdown card: a Pi restart mid-outage stays silent until the next event,
+# exactly as a consumed mains_down does today.
+_wan_confirmed = False
 
 # notification engine
 _notify_queue = []          # list of (event_key, class, payload_dict)
@@ -548,6 +560,15 @@ EVENT_TAXONOMY = {
         lambda d: "🟢 <b>Internet Restored</b>\n\nThe internet connection is back."
                   + (f" It was out for {_fmt_downtime_span(d)}." if _fmt_downtime_span(d) else "")
                   + "\nMonitoring back to normal."),
+    "wan_down": (
+        # Fires ONLY on double-checked confirmation (Pi probes + ESP latch),
+        # never on a bare suspect — the ~1min early alert. TG-first delivery
+        # usually falls back to local ntfy here (TG needs the WAN that's down).
+        "critical",
+        lambda d: "🌐 <b>Internet Down — Confirmed</b>\n\nThe internet has been"
+                  " down for about a minute (double-checked). The server will shut down in "
+                  + _wan_shutdown_in()
+                  + " if it does not return."),
     "shutdown_mains_start": (
         "critical",
         lambda d: "🔴 <b>Shutting Down — Power Timeout</b>\n\nPower has been out past the limit."
@@ -662,6 +683,21 @@ def _parse_gpio_test(data):
                 -1: "real input restored"}.get(v, f"value {v}")
     except (TypeError, ValueError):
         return str(data)
+
+
+def _wan_shutdown_in():
+    """Remaining WAN countdown for the confirmed-down alert ("~10 minutes").
+
+    Read live from the ESP state so a retuned /wantimeout is reflected;
+    falls back to the compiled default when no state is cached yet.
+    """
+    try:
+        with _lock:
+            s = dict(_esp32_state)
+        mins = int((s.get("wanTimeoutMs") or WAN_TIMEOUT_DEFAULT_MIN * 60000) // 60000)
+    except Exception:
+        mins = WAN_TIMEOUT_DEFAULT_MIN
+    return f"~{mins} minutes"
 
 
 def _fmt_downtime_span(d):
@@ -869,13 +905,92 @@ def _event_downtime_sec(data):
         return None
 
 
+def _wan_probe_ip(timeout=WAN_PROBE_TIMEOUT):
+    """TCP 8.8.8.8:53 — raw IP egress, no DNS involved."""
+    try:
+        socket.create_connection(("8.8.8.8", 53), timeout=timeout).close()
+        return True
+    except Exception as e:
+        log.debug(f"wan ip probe failed: {e}")
+        return False
+
+
+def _wan_probe_web(timeout=WAN_PROBE_TIMEOUT):
+    """TCP google.com:443 — exercises DNS + HTTPS egress in one connect."""
+    try:
+        socket.create_connection(("google.com", 443), timeout=timeout).close()
+        return True
+    except Exception as e:
+        log.debug(f"wan web probe failed: {e}")
+        return False
+
+
+def _handle_wan_suspect(seq, data):
+    """Pi half of the WAN handshake: double-check, then confirm or clear.
+
+    Both probes must fail to confirm (either succeeding means usable
+    internet — e.g. DNS down but IP egress alive is NOT a shutdown cause).
+    Runs synchronously: worst case ~2x WAN_PROBE_TIMEOUT on the reconciler,
+    and a wedged Pi is covered by the ESP's auto-confirm anyway.
+    """
+    global _wan_confirmed
+    if _wan_confirmed:
+        # Already alerted for this outage; the ESP likely rebooted and lost
+        # its latch (re-suspect). Quietly re-arm it — never re-notify.
+        if not _esp_command({"cmd": "wan_confirm"}):
+            log.error(f"wan re-confirm failed (seq={seq})")
+        return
+    ip_ok = _wan_probe_ip()
+    web_ok = _wan_probe_web()
+    if not ip_ok and not web_ok:
+        _wan_confirmed = True
+        _history_open("wan")
+        if not _esp_command({"cmd": "wan_confirm"}):
+            log.error(f"wan_confirm failed (seq={seq}) — ESP auto-confirms on Pi silence")
+        klass, fmt = EVENT_TAXONOMY["wan_down"]
+        notify_event("wan_down", klass, fmt(data))
+    else:
+        # False alarm (ESP-local glitch): stand the ESP down, log only —
+        # no alert, no /history entry.
+        if not _esp_command({"cmd": "wan_clear"}):
+            log.error(f"wan_clear failed (seq={seq})")
+        _wan_confirmed = False
+        log.info(f"wan suspect cleared as false alarm "
+                 f"(seq={seq} ip_ok={ip_ok} web_ok={web_ok})")
+
+
+def _handle_wan_down(seq, data):
+    """ESP latched confirmed WAN-down (Pi command, or auto-confirm while
+    this Pi was deaf). Alert unless we already did at confirm time."""
+    global _wan_confirmed
+    if _wan_confirmed:
+        log.debug(f"dropping duplicate wan_down (seq={seq})")
+        return
+    _wan_confirmed = True
+    _history_open("wan")
+    klass, fmt = EVENT_TAXONOMY["wan_down"]
+    notify_event("wan_down", klass, fmt(data))
+
+
 def process_event(evt, seq, data):
-    global _last_seq
+    global _last_seq, _wan_confirmed
     # Dropped noise: the agent ACK ("Shutdown request accepted") adds no
     # information — the "Shutting Down" command + PVE "Confirmed Offline"
     # pair already tells the story. Skip silently (seq still advances).
     if evt == "shutdown_webhook_ok":
         log.debug(f"dropping noisy {evt} (seq={seq})")
+        return
+    # WAN handshake events bypass the taxonomy lookup: suspect is never
+    # user-visible (the double-check decides), cleared is log-only.
+    if evt == "wan_suspect":
+        _handle_wan_suspect(seq, data)
+        return
+    if evt == "wan_down":
+        _handle_wan_down(seq, data)
+        return
+    if evt == "wan_cleared":
+        _wan_confirmed = False
+        log.info(f"wan suspect cleared by ESP (seq={seq})")
         return
     # Sub-threshold WAN restores are TCP flaps, not user-meaningful outages
     # (tonight's 14s "Internet Restored" with no outage anyone noticed).
@@ -885,6 +1000,7 @@ def process_event(evt, seq, data):
         secs = _event_downtime_sec(data)
         if secs is not None and secs < WAN_ALERT_MIN_SEC:
             log.debug(f"dropping sub-threshold {evt} ({secs}s, seq={seq})")
+            _wan_confirmed = False
             _history_close(secs, min_sec=WAN_ALERT_MIN_SEC)
             return
     taxonomy = EVENT_TAXONOMY.get(evt)
@@ -908,6 +1024,7 @@ def process_event(evt, seq, data):
     elif evt == "mains_restored":
         _history_close(_event_downtime_sec(data))
     elif evt == "wan_restored":
+        _wan_confirmed = False
         _history_close(_event_downtime_sec(data), min_sec=WAN_ALERT_MIN_SEC)
     if evt in VERIFY_ONLINE:
         # Single online voice: the ESP's own liveness message would double
@@ -1072,8 +1189,9 @@ def cmd_status():
     mains = s.get("mainsUp", False)
     wan = s.get("wanUp", False)
     lines = [header]
+    wan_note = " · <i>checking…</i>" if (not wan and s.get("wanSuspect") and not s.get("sdWAN")) else ""
     lines.append(f"{'🟢' if mains else '🔴'} <b>Mains</b>   <code>{'UP' if mains else 'DOWN'}</code>")
-    lines.append(f"{'🟢' if wan else '🔴'} <b>WAN</b>     <code>{'UP' if wan else 'DOWN'}</code>")
+    lines.append(f"{'🟢' if wan else '🔴'} <b>WAN</b>     <code>{'UP' if wan else 'DOWN'}</code>{wan_note}")
     lines.append(f"{'🟢' if prox_online else '🔴'} <b>Proxmox</b> <code>{'ONLINE' if prox_online else 'OFFLINE'}</code>"
                  + (f" · {prox_up}" if prox_online else ""))
     if s.get("gpioTestOverride", -1) != -1:
@@ -1136,7 +1254,7 @@ def cmd_diag():
         stable_ms = s.get("mainsStableSinceMs", -1)
         age = fmt_downtime(stable_ms // 1000) if isinstance(stable_ms, (int, float)) and stable_ms >= 0 else "unknown"
         lines.append(f"🟢 <b>Mains</b>   {'UP' if s.get('mainsUp') else 'DOWN'} · last change {age}")
-        lines.append(f"🟢 <b>WAN</b>     {'UP' if s.get('wanUp') else 'DOWN'}")
+        lines.append(f"🟢 <b>WAN</b>     {'UP' if s.get('wanUp') else 'DOWN'}" + (" · checking…" if (not s.get("wanUp") and s.get("wanSuspect") and not s.get("sdWAN")) else ""))
         lines.append(f"🟢 <b>Node</b>    {'ONLINE' if prox_online else 'OFFLINE'}" + (f" · {prox_up}" if prox_online else ""))
         lines.append("────")
         lines.append(f"⏱ <b>Delays</b>  mains {s.get('mainsDelayMs', 300000) // 60000}m · wan {s.get('wanTimeoutMs', 600000) // 60000}m")

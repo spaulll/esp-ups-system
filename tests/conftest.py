@@ -98,7 +98,8 @@ def _clean(pm):
     pm._sensor_dead_since = None
     pm._sensor_blind_announced = False
     for attr, val in (("_last_mains_down_at", None),
-                      ("_last_mains_downtime_sec", None)):
+                      ("_last_mains_downtime_sec", None),
+                      ("_wan_confirmed", False)):
         if hasattr(pm, attr):
             setattr(pm, attr, val)
     for f in (getattr(pm, "OUTAGE_FILE", None),

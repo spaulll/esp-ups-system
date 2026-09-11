@@ -19,7 +19,7 @@ const char* WIFI_SSID            = "__WIFI_SSID__";
 const char* WIFI_PASS            = "__WIFI_PASS__";
 const uint8_t MAIN_ROUTER_BSSID[] = __WIFI_BSSID_BYTES__;
 const char* OTA_PASSWORD         = "__OTA_PASSWORD__";
-const char* FW_VERSION           = "V7.3";
+const char* FW_VERSION           = "V7.4";
 
 const char* PROXMOX_IP           = "__PROXMOX_IP__";
 const char* SHUTDOWN_URL         = "__PROXMOX_SHUTDOWN_URL__";
@@ -50,6 +50,13 @@ const uint8_t       MAX_WOL            = 5;
 const uint8_t       MAX_WEBHOOK_RETRY  = 6;
 const unsigned long WEBHOOK_RETRY_MS   = 10000;
 const unsigned long WAN_SUSTAIN_MS     = 30000;
+// WAN double-check handshake (ESP first-detect + Pi confirm):
+// continuous fail for SUSPECT_MS -> "wan_suspect" event (Pi probes from its
+// own vantage point). The 10-min shutdown countdown starts only on confirm:
+// Pi "wan_confirm" command, or auto-confirm after PI_WAIT_MS of Pi silence
+// (safe default — a dead Pi must not wedge us in suspect forever).
+const unsigned long WAN_SUSPECT_MS      = 60000;
+const unsigned long WAN_PI_WAIT_MS      = 60000;
 
 // ==================== NVS KEYS ====================
 const char* NVS_NS = "ups";
@@ -74,8 +81,11 @@ unsigned long wanTimeoutMs = DEFAULT_WAN_TIMEOUT_MS;
 
 bool mainsDownNotified = false;
 unsigned long mainsFailSince = 0;
-bool wanDownNotified = false;
+bool wanDownNotified = false;   // CONFIRMED wan-down: shutdown countdown running
 unsigned long wanFailSince = 0;
+bool wanSuspect = false;        // ~1min continuous fail, awaiting Pi confirm/clear
+unsigned long wanSuspectSince = 0;
+unsigned long wanFirstFailSince = 0;  // first-fail stamp for the suspect window
 unsigned long wanUpSince = 0;
 unsigned long espBootTime = 0;
 
@@ -125,7 +135,7 @@ uint8_t wolAttempts = 0;
 bool wakeFailedEmitted = false;
 
 // ==================== DEFERRED COMMANDS ====================
-enum Cmd { CMD_NONE, CMD_WAKE, CMD_SHUTDOWN, CMD_MAINSDELAY, CMD_WAN_TIMEOUT, CMD_GPIO_TEST };
+enum Cmd { CMD_NONE, CMD_WAKE, CMD_SHUTDOWN, CMD_MAINSDELAY, CMD_WAN_TIMEOUT, CMD_GPIO_TEST, CMD_WAN_CONFIRM, CMD_WAN_CLEAR };
 Cmd pendingCmd = CMD_NONE;
 long pendingMinutes = 0;
 int  pendingGpioVal = -1;
@@ -141,6 +151,9 @@ uint32_t addEvent(const char* evt, const char* data);
 void notifyPi(const char* evt, uint32_t seq);
 void saveState();
 void clearFlags();
+bool wanUpNow();
+void confirmWan(const char* src);
+void clearWan(const char* src);
 void executeShutdown(const char* mode);
 void startWake();
 void sendWolBurst();
@@ -202,6 +215,36 @@ void resetFailureWindows() {
   mainsFailSince = 0;
   wanDownNotified = false;
   wanFailSince = 0;
+  wanSuspect = false;
+  wanSuspectSince = 0;
+  wanFirstFailSince = 0;
+}
+
+// Latch a CONFIRMED wan-down and start the wanTimeoutMs shutdown countdown.
+// Idempotent: a duplicate confirm (Pi re-send after ESP reboot, or the
+// auto-confirm racing a late Pi command) is a no-op. A stale confirm that
+// arrives after self-recovery just dissolves the suspect state.
+void confirmWan(const char* src) {
+  if (wanDownNotified) return;
+  wanSuspect = false;
+  wanSuspectSince = 0;
+  if (!wanUpNow()) {
+    wanDownNotified = true;
+    wanFailSince = millis();
+    addEvent("wan_down", src);
+  }
+}
+
+// Pi judged the suspect a false alarm (its own probes succeeded): drop all
+// WAN fail state, including a raced confirmed countdown — the next failing
+// polls re-suspect on their own if the outage is real. Ledger trace only.
+void clearWan(const char* src) {
+  wanFirstFailSince = 0;
+  wanSuspect = false;
+  wanSuspectSince = 0;
+  wanDownNotified = false;
+  wanFailSince = 0;
+  addEvent("wan_cleared", src);
 }
 
 // ==================== EVENT LEDGER ====================
@@ -603,6 +646,12 @@ void handlePendingCommand() {
       gpioTestOverride = pendingGpioVal;
       addEvent("gpio_test", (String("value=") + String(pendingGpioVal)).c_str());
       break;
+    case CMD_WAN_CONFIRM:
+      confirmWan("src=pi");
+      break;
+    case CMD_WAN_CLEAR:
+      clearWan("src=pi");
+      break;
     default:
       break;
   }
@@ -634,6 +683,7 @@ void handleGetState() {
   d["wanTimeoutMs"] = wanTimeoutMs;
   d["mainsFailSinceMs"] = mainsDownNotified ? (now - mainsFailSince) : 0;
   d["wanFailSinceMs"] = wanDownNotified ? (now - wanFailSince) : 0;
+  d["wanSuspect"] = wanSuspect;
   d["espUptimeMs"] = now - espBootTime;
   d["espResetReason"] = resetReasonStr();
   d["freeHeap"] = ESP.getFreeHeap();
@@ -706,6 +756,10 @@ void handlePostCommand() {
     int val = d["value"] | -2;
     if (val >= -1 && val <= 1) { pendingCmd = CMD_GPIO_TEST; pendingGpioVal = val; }
     else { server.send(400, "application/json", "{\"error\":\"value must be -1, 0, or 1\"}"); return; }
+  } else if (cmd == "wan_confirm") {
+    pendingCmd = CMD_WAN_CONFIRM;
+  } else if (cmd == "wan_clear") {
+    pendingCmd = CMD_WAN_CLEAR;
   } else {
     server.send(400, "application/json", "{\"error\":\"unknown command\"}");
     return;
@@ -832,21 +886,45 @@ void loop() {
       saveState();
     }
   }
-  // WAN COUNTDOWN (only when WiFi is up — otherwise we can't reach the targets)
+  // WAN HANDSHAKE (only when WiFi is up — otherwise we can't reach the targets).
+  // Single failed polls are noise: suspect needs WAN_SUSPECT_MS of continuous
+  // failure, and the wanTimeoutMs shutdown countdown starts only on confirm
+  // (Pi "wan_confirm", or auto-confirm after WAN_PI_WAIT_MS of Pi silence).
   bool wifiOk = (WiFi.status() == WL_CONNECTED);
   if (!wanUp) {
-    if (wifiOk && !wanDownNotified) {
-      wanDownNotified = true;
-      wanFailSince = now;
+    if (wifiOk) {
+      if (wanFirstFailSince == 0) wanFirstFailSince = now;
+      if (!wanSuspect && !wanDownNotified &&
+          (now - wanFirstFailSince >= WAN_SUSPECT_MS)) {
+        wanSuspect = true;
+        wanSuspectSince = now;
+        addEvent("wan_suspect");
+      }
+      if (wanSuspect && !wanDownNotified &&
+          (now - wanSuspectSince >= WAN_PI_WAIT_MS)) {
+        confirmWan("src=auto");
+      }
+    } else {
+      wanFirstFailSince = 0;  // WiFi down proves nothing — don't age the window
     }
-    if (wifiOk && !isNodeDown() && (now - wanFailSince >= wanTimeoutMs)) {
+    if (wanDownNotified && wifiOk && !isNodeDown() && (now - wanFailSince >= wanTimeoutMs)) {
       executeShutdown("wan");
     }
   } else {
+    wanFirstFailSince = 0;
+    if (wanSuspect && !wanDownNotified) {
+      // Recovered while suspect-only (pre-confirm): false alarm, no user
+      // noise — the Pi drops the matching wan_cleared silently.
+      wanSuspect = false;
+      wanSuspectSince = 0;
+      addEvent("wan_cleared", "src=self");
+    }
     if (wanDownNotified) {
       unsigned long dur = now - wanFailSince;
       wanDownNotified = false;
       wanFailSince = 0;
+      wanSuspect = false;
+      wanSuspectSince = 0;
       addEvent("wan_restored", ("downtimeMs=" + String(dur)).c_str());
     }
   }
