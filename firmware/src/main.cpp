@@ -165,6 +165,9 @@ unsigned long mainsOutageElapsed = 0;      // accumulated down-time ms
 unsigned long mainsLastAccumAt = 0;
 // adaptive post-wake re-shutdown:
 unsigned long lastWakeEndedAt = 0;
+// wake-wait watchdog helpers (V9):
+bool wkWaitDownLatched = false;
+unsigned long wkWaitDownSince = 0;
 
 // ==================== DEFERRED COMMANDS ====================
 enum Cmd { CMD_NONE, CMD_WAKE, CMD_SHUTDOWN, CMD_MAINSDELAY, CMD_WAN_TIMEOUT, CMD_GPIO_TEST, CMD_WAN_CONFIRM, CMD_WAN_CLEAR };
@@ -190,6 +193,7 @@ void confirmWan(const char* src);
 void clearWan(const char* src);
 void executeShutdown(const char* mode);
 void startWake();
+void resetWakeGuard();
 void sendWolBurst();
 void handleShutdownProgress(unsigned long now);
 void handleWakeProgress(unsigned long now);
@@ -456,6 +460,7 @@ void executeShutdown(const char* mode) {
   wakePhase = WK_IDLE;
   wolAttempts = 0;
   wakeFailedEmitted = false;
+  resetWakeGuard();
   if (strcmp(mode, "mains") == 0) {
     sdMains = true;
     if (!wanUpNow()) sdWAN = true;
@@ -506,6 +511,16 @@ void handleShutdownProgress(unsigned long now) {
 }
 
 // ==================== WAKE ====================
+void resetWakeGuard() {
+  wakeBlips = 0;
+  wakeStrict = false;
+  wakeStabilizeUntil = 0;
+  wakeUnstableNotified = false;
+  wakeWaitStartedAt = 0;
+  wkWaitDownLatched = false;
+  wkWaitDownSince = 0;
+}
+
 void startWake() {
   wakePhase = WK_SETTLING;
   wakeTs = millis();
@@ -513,20 +528,67 @@ void startWake() {
   wakeFailedEmitted = false;
   // No stale shutdown-webhook retry may hit a server that is being woken.
   sdPhase = SHD_IDLE;
+  // V9 flutter guard: re-arm strict mode if we are still inside the flap
+  // memory window (30 min of quiet power clears it).
+  resetWakeGuard();
+  wakeWaitStartedAt = millis();
+  if (wakeFlappySince && (millis() - wakeFlappySince < WK_FLAP_MEMORY_MS)) {
+    wakeStrict = true;
+    wakeStabilizeUntil = millis() + WK_STABILIZE_MS;
+  } else {
+    wakeFlappySince = 0;
+  }
   addEvent("wake_sequence_start");
 }
 
 void handleWakeProgress(unsigned long now) {
   switch (wakePhase) {
-    case WK_SETTLING:
-      if (now - wakeTs >= SETTLE_MS) {
+    case WK_SETTLING: {
+      // Flap watching: count confirmed down->up flips while we wait.
+      if (wkWaitDownLatched) {
+        if (mainsUpNow()) {
+          wkWaitDownLatched = false;
+          wakeBlips++;
+          if (wakeBlips > WK_BLIP_LIMIT) {
+            wakeStrict = true;
+            wakeStabilizeUntil = now + WK_STABILIZE_MS;
+            if (wakeFlappySince == 0) wakeFlappySince = now;
+          }
+        }
+      } else if (!mainsUpNow()) {
+        wkWaitDownLatched = true;
+        wkWaitDownSince = now;
+        if (wakeStrict) wakeStabilizeUntil = now + WK_STABILIZE_MS;
+      }
+      if (wakeStrict) {
+        if (!mainsUpNow()) {
+          // Persistent outage during the wait: abort, never boot into it.
+          if (now - wkWaitDownSince >= WK_ABORT_DOWN_MS) {
+            wakePhase = WK_IDLE;
+            resetWakeGuard();
+            break;
+          }
+        } else if (now >= wakeStabilizeUntil) {
+          sendWolBurst();
+          wakePhase = WK_POLLING;
+          wakeTs = now;
+          lastLiveness = now;
+          lastReWol = now;
+        }
+      } else if (now - wakeTs >= SETTLE_MS) {
         sendWolBurst();
         wakePhase = WK_POLLING;
         wakeTs = now;
         lastLiveness = now;
         lastReWol = now;
       }
+      // One calm "power is unstable" message after 1h stuck in the wait.
+      if (!wakeUnstableNotified && (now - wakeWaitStartedAt >= WK_UNSTABLE_ALERT_MS)) {
+        wakeUnstableNotified = true;
+        addEvent("power_unstable");
+      }
       break;
+    }
     case WK_POLLING:
       if (now - lastLiveness >= PROX_POLL_MS) {
         lastLiveness = now;
@@ -536,6 +598,8 @@ void handleWakeProgress(unsigned long now) {
           resetFailureWindows();
           wakePhase = WK_IDLE;
           wolAttempts = 0;
+          lastWakeEndedAt = now;
+          resetWakeGuard();
         } else if (wolAttempts < MAX_WOL && now - lastReWol >= RE_WOL_AFTER_MS) {
           wolAttempts++;
           wolRexmitCount++;
@@ -561,6 +625,8 @@ void handleWakeProgress(unsigned long now) {
           clearFlags();
           resetFailureWindows();
           wakePhase = WK_IDLE;
+          lastWakeEndedAt = now;
+          resetWakeGuard();
         }
       }
       break;

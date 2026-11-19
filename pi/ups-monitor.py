@@ -799,6 +799,12 @@ EVENT_TAXONOMY = {
         "info",
         lambda d: "🧪 <b>Bench Test</b>\n\nMains input test applied: "
                   + (_parse_gpio_test(d.get('data')) if d.get('data') else "value set") + "."),
+    "power_unstable": (
+        "warning",
+        lambda d: "⚠️ <b>Power is unstable</b>\n\n"
+                  "The electricity keeps going on and off. I've left the server OFF "
+                  "until the power settles, so the UPS battery isn't wasted.\n"
+                  "I'll boot it automatically once power stays steady for a few minutes."),
     "mains_delay_set": (
         "info",
         lambda d: "⏱️ <b>Power Delay Updated</b>\n\nAuto-shutdown now waits "

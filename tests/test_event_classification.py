@@ -82,6 +82,18 @@ def test_info_batch_flushes_as_one_summary(pm):
     assert len(tg) == 1, f"expected exactly one summary, got {pm.delivered}"
 
 
+def test_power_unstable_taxonomy_exists_and_is_warning(pm):
+    assert "power_unstable" in pm.EVENT_TAXONOMY
+    klass, fmt = pm.EVENT_TAXONOMY["power_unstable"]
+    assert klass == "warning", f"unstable-power must be immediate, got {klass}"
+    msg = fmt({})
+    assert "Power is unstable" in msg, msg
+    assert "server OFF" in msg, msg
+    assert "UPS battery isn't wasted" in msg, msg
+    for word in ("WOL", "flags", "countdown", "GPIO"):
+        assert word not in msg, f"tech word leaked into UX: {word}"
+
+
 def test_bump_counters_only_for_matching_events(pm):
     pm._daily_counters = {"date": pm._today(), "mains_down": 0, "shutdowns": 0, "blips": 0}
     pm.process_event("mains_down", 1, {"event": "mains_down", "data": "mins=5"})
