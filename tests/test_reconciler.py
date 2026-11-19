@@ -104,6 +104,17 @@ def test_bad_event_does_not_kill_reconciler(pm, wait_for):
     assert pm._last_seq == 2
 
 
+def test_esp_seq_reset_resyncs_without_going_deaf(pm):
+    """If the ESP's NVS is wiped, its seq restarts below the Pi's mark.
+    The Pi must adopt it so /events?since= keeps delivering events."""
+    stub_esp(pm, state={"mainsUp": True, "wanUp": True, "seq": 5}, events=[])
+    pm._last_seq = 100
+    pm.reconcile_once()
+    assert pm._last_seq == 5, f"must resync to ESP seq: {pm._last_seq}"
+    # and the resync is persisted
+    assert pm._load_json(pm.SEQ_FILE, {}) == {"seq": 5}
+
+
 def test_unexpected_reconcile_error_does_not_raise(pm):
     """Even a fully unexpected error in the reconcile body is contained."""
     def bad_state():

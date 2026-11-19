@@ -1201,6 +1201,14 @@ def _reconcile_once():
                 _esp_state_ts = time.time()
                 _sensor_dead_since = None
                 _sensor_blind_announced = False
+            esp_seq = int(state.get("seq", 0))
+            if _last_seq > esp_seq:
+                # The ESP's sequence restarted below ours (NVS wiped /
+                # reflashed). If we kept our higher mark, /events?since=N
+                # would return nothing forever and we'd be silently deaf.
+                log.warning(f"ESP seq reset detected (pi={_last_seq}, esp={esp_seq}) — resyncing")
+                _last_seq = esp_seq
+                _save_seq()
             _track_mains_stable_from_esp(state)
             if announced:
                 notify_event("sensor_back", "info",
