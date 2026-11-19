@@ -394,13 +394,9 @@ bool nodeLivenessOk() {
   IPAddress ip;
   ip.fromString(PROXMOX_IP);
   if (!Ping.ping(ip, 1)) return false;
-  WiFiClient c;
-  HTTPClient http;
-  http.begin(c, "http://" + String(PROXMOX_IP) + ":" + String(PROXMOX_API_PORT) + "/");
-  http.setTimeout(2000);
-  int code = http.GET();
-  http.end();
-  return code > 0;
+  // TCP to the API port — NOT plain HTTP against a TLS port (that relied on
+  // pveproxy's redirect behaviour; a tcpCheck is robust and honest).
+  return tcpCheck(PROXMOX_IP, PROXMOX_API_PORT, 2000);
 }
 
 // ==================== RESTORE CONDITIONS ====================
