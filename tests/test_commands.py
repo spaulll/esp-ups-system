@@ -72,6 +72,22 @@ def test_on_when_countdown_running_sends_wake(pm):
     assert sent == [{"cmd": "wake"}], sent
 
 
+def test_on_when_wan_countdown_running_sends_wake(pm):
+    """/on during a WAN countdown must suspend it too (same as mains) —
+    no bogus wake, reply must not claim 'Wake commanded'."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": False,
+                       "sdMains": False, "sdWAN": False, "sdManual": False,
+                       "manualOverride": False,
+                       "mainsFailSinceMs": 0, "wanFailSinceMs": 300000}
+    pm._pve_probe = lambda: (True, 100, "1m")
+    sent = []
+    pm._esp_command = lambda cmd: sent.append(cmd) or True
+    reply = pm.handle_command("/on", None)
+    assert "Override" in reply, reply
+    assert "Wake commanded" not in reply, f"must not claim wake while node is up: {reply}"
+    assert sent == [{"cmd": "wake"}], sent
+
+
 def test_off_when_already_down_says_so(pm):
     """/off when Proxmox is actually down should not send shutdown again."""
     pm._esp32_state = {"sdMains": True, "sdWAN": False, "sdManual": False}

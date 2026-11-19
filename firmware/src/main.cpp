@@ -604,10 +604,13 @@ void handlePendingCommand() {
         saveState();
         addEvent("manual_on");
         startWake();
-      } else if (mainsDownNotified) {
+      } else if (mainsDownNotified || wanDownNotified) {
+        // /on during EITHER countdown suspends the auto-shutdown for this
+        // outage (mains or WAN). The node is still up — no wake is needed
+        // and none must be started.
         manualOverride = true;
         saveState();
-        addEvent("manual_override", "suppress_mains_shutdown");
+        addEvent("manual_override", "suppress_auto_shutdown");
       } else {
         // Manual wake with no flags set (e.g. node shut down externally,
         // outside the ESP's shutdown path). Was a silent no-op, so /on
@@ -887,10 +890,13 @@ void loop() {
       mainsFailSince = 0;
       addEvent("mains_restored", ("downtimeMs=" + String(dur)).c_str());
     }
-    if (manualOverride) {
-      manualOverride = false;
-      saveState();
-    }
+  }
+  // Manual override lasts until BOTH causes have cleared: a /on during a
+  // mains OR WAN countdown suspends that outage's auto-shutdown. Restoring
+  // only one cause is not enough to re-arm the other.
+  if (manualOverride && mainsUp && wanUp) {
+    manualOverride = false;
+    saveState();
   }
   // WAN HANDSHAKE (only when WiFi is up — otherwise we can't reach the targets).
   // Single failed polls are noise: suspect needs WAN_SUSPECT_MS of continuous
@@ -913,7 +919,8 @@ void loop() {
     } else {
       wanFirstFailSince = 0;  // WiFi down proves nothing — don't age the window
     }
-    if (wanDownNotified && wifiOk && !isNodeDown() && (now - wanFailSince >= wanTimeoutMs)) {
+    if (wanDownNotified && wifiOk && !isNodeDown() && !manualOverride &&
+        (now - wanFailSince >= wanTimeoutMs)) {
       executeShutdown("wan");
     }
   } else {
