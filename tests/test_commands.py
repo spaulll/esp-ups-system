@@ -190,6 +190,19 @@ def test_delay_set_without_pending_falls_through_to_summary(pm):
     assert pm._tg_edit_msg_calls == [], "should not edit without a pending message"
 
 
+def test_status_uses_effective_short_delay_when_active(pm):
+    """After a wake the ESP may report a shorter effective shutdown delay
+    (adaptive re-shutdown). /status must show it, not the configured 5 min."""
+    pm._esp32_state = {"mainsUp": False, "wanUp": True, "fw": "V9.0",
+                       "mainsDelayMs": 300000, "mainsDelayEffectiveMs": 180000,
+                       "mainsFailSinceMs": 60000, "sdMains": False,
+                       "sdWAN": False, "sdManual": False, "manualOverride": False}
+    text = pm.cmd_status()
+    assert "Auto-shutdown in" in text, text
+    assert "2m" in text, text
+    assert "5m" not in text, text
+
+
 def test_status_and_diag_return_strings(pm):
     pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0"}
     assert isinstance(pm.cmd_status(), str)

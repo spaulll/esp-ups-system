@@ -1445,7 +1445,7 @@ def cmd_status():
     # Extrapolate elapsed from cached mainsFailSinceMs using wall-clock, the
     # same way the live countdown card does — so /status never looks stale.
     mfail = s.get("mainsFailSinceMs", 0) or 0
-    mdelay = s.get("mainsDelayMs", 300000) or 1
+    mdelay = s.get("mainsDelayEffectiveMs") or s.get("mainsDelayMs", 300000) or 1
     if mains_down_notified() and mfail:
         mfail = min(mfail + (time.time() - ts) * 1000 if ts else mfail, mdelay)
         down_s = int(mfail // 1000)
@@ -1767,7 +1767,7 @@ def _build_countdown_card():
     if s.get("sdMains") or s.get("sdWAN") or s.get("sdManual") or s.get("manualOverride"):
         return None
     mfail = s.get("mainsFailSinceMs", 0) or 0
-    mdelay = s.get("mainsDelayMs", 300000) or 1
+    mdelay = s.get("mainsDelayEffectiveMs") or s.get("mainsDelayMs", 300000) or 1
     if mfail <= 0:
         return None
     now_ms = (time.time() - ts) * 1000 if ts else 0

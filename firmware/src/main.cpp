@@ -165,6 +165,14 @@ unsigned long mainsOutageElapsed = 0;      // accumulated down-time ms
 unsigned long mainsLastAccumAt = 0;
 // adaptive post-wake re-shutdown:
 unsigned long lastWakeEndedAt = 0;
+
+unsigned long mainsEffectiveDelayMs() {
+  if (lastWakeEndedAt != 0 &&
+      (millis() - lastWakeEndedAt < ADAPTIVE_WINDOW_MS)) {
+    return ADAPTIVE_SHORT_DELAY_MS;
+  }
+  return mainsDelayMs;
+}
 // wake-wait watchdog helpers (V9):
 bool wkWaitDownLatched = false;
 unsigned long wkWaitDownSince = 0;
@@ -275,7 +283,8 @@ void persistCountdowns() {
   unsigned long mRemain = 0, wRemain = 0;
   if (mainsDownNotified && !isNodeDown()) {
     unsigned long elapsed = mainsOutageElapsed;   // accumulated, paused during suspect
-    mRemain = (elapsed >= mainsDelayMs) ? 0 : mainsDelayMs - elapsed;
+    unsigned long delay = mainsEffectiveDelayMs();
+    mRemain = (elapsed >= delay) ? 0 : delay - elapsed;
   }
   if (wanDownNotified && !isNodeDown()) {
     unsigned long elapsed = now - wanFailSince;
@@ -845,6 +854,7 @@ void handleGetState() {
   d["manualOffMainsDown"] = manualOffWhileMainsDown;
   d["manualOverride"] = manualOverride;
   d["mainsDelayMs"] = mainsDelayMs;
+  d["mainsDelayEffectiveMs"] = mainsEffectiveDelayMs();
   d["wanTimeoutMs"] = wanTimeoutMs;
   d["mainsFailSinceMs"] = mainsDownNotified ? mainsOutageElapsed : 0;
   d["wanFailSinceMs"] = wanDownNotified ? (now - wanFailSince) : 0;
@@ -1067,11 +1077,11 @@ void loop() {
       mainsDownCount++;
       mainsOutageElapsed = 0;
       mainsLastAccumAt = now;
-      addEvent("mains_down", ("mins=" + String(mainsDelayMs / 60000UL)).c_str());
+      addEvent("mains_down", ("mins=" + String(mainsEffectiveDelayMs() / 60000UL)).c_str());
       persistCountdowns();
     }
     if (!manualOverride && !isNodeDown() && !mainsReturnSuspect &&
-        (mainsOutageElapsed >= mainsDelayMs)) {
+        (mainsOutageElapsed >= mainsEffectiveDelayMs())) {
       executeShutdown("mains");
     }
   } else {
