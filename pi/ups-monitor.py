@@ -1101,6 +1101,11 @@ def process_event(evt, seq, data):
         _wan_confirmed = False
         log.info(f"wan suspect cleared by ESP (seq={seq})")
         return
+    # A wake/reboot ends the current WAN-outage memory. If we kept the
+    # latch here, the NEXT real outage would be treated as "already confirmed"
+    # and go completely silent (no alert, no history entry).
+    if evt in ("online_confirmed", "esp_booted"):
+        _wan_confirmed = False
     # Sub-threshold WAN restores are TCP flaps, not user-meaningful outages
     # (tonight's 14s "Internet Restored" with no outage anyone noticed).
     # Dropped silently: no message AND no /history entry (the shutdown's

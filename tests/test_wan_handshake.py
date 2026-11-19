@@ -138,6 +138,37 @@ def test_confirm_uses_live_wantimeout(pm):
     assert "minutes" in fmt({}), fmt({})
 
 
+def test_online_confirmed_clears_wan_confirm_flag(pm, wait_for):
+    """After a wake completes, the next real WAN outage must alert again
+    (regression: the latch used to live forever after a WAN shutdown+wake,
+    silencing every later internet outage)."""
+    _stub_probes(pm, False, False)
+    _stub_esp_cmd(pm)
+    pm._esp32_state = {"wanTimeoutMs": 600000}
+    pm.process_event("wan_suspect", 1, {"event": "wan_suspect"})
+    _wait_tg(pm, wait_for, "Internet Down")
+    assert pm._wan_confirmed is True
+    # wake completes -> ESP emits online_confirmed
+    pm._pve_probe = lambda: (True, 3600, "1h")
+    pm.process_event("online_confirmed", 2, {"event": "online_confirmed"})
+    time.sleep(0.3)
+    assert pm._wan_confirmed is False, "next outage must not be treated as already-confirmed"
+    before = sum(1 for d in pm.delivered if d[0] == "tg" and "Internet Down" in d[1])
+    pm.process_event("wan_suspect", 3, {"event": "wan_suspect"})
+    assert wait_for(
+        lambda: sum(1 for d in pm.delivered
+                    if d[0] == "tg" and "Internet Down" in d[1]) > before,
+        timeout=3.0), pm.delivered
+
+
+def test_esp_booted_clears_wan_confirm_flag(pm):
+    """An ESP reboot mid-outage resets the outage memory: a fresh suspect
+    after boot is a fresh (alertable) situation."""
+    pm._wan_confirmed = True
+    pm.process_event("esp_booted", 4, {"event": "esp_booted", "data": "poweron"})
+    assert pm._wan_confirmed is False
+
+
 def test_wan_restored_clears_confirm_flag(pm, wait_for):
     """After a restore the next suspect is a new outage: full alert again."""
     _stub_probes(pm, False, False)
