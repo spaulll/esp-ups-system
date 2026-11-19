@@ -57,3 +57,61 @@ def test_history_caps_at_ten(pm):
 def test_history_in_menu_and_help(pm):
     assert any(c["command"] == "history" for c in pm.TG_COMMANDS)
     assert "/history" in pm.handle_command("/bogus", None)
+
+
+def test_mains_restored_clears_stale_outage_memory(pm, wait_for):
+    """A recovered mains outage must not linger in memory: an unrelated manual
+    /off + /on days later must NOT report a fake long downtime (P5)."""
+    import time as _t
+    pm.process_event("mains_down", 1, {"event": "mains_down", "data": "mins=5"})
+    pm.process_event("mains_restored", 2,
+                     {"event": "mains_restored", "data": "downtimeMs=30000"})
+    with pm._lock:
+        assert pm._last_mains_down_at is None
+        assert pm._last_mains_downtime_sec is None
+    # later manual /off -> /on (online_confirmed verifies via PVE)
+    pm.process_event("shutdown_manual_start", 3, {"event": "shutdown_manual_start"})
+    pm._pve_probe = lambda: (True, 3600, "1h")
+    pm.process_event("online_confirmed", 4, {"event": "online_confirmed"})
+    assert wait_for(lambda: any("Confirmed Online" in d[1]
+                                for d in pm.delivered if d[0] == "tg")), pm.delivered
+    text = " ".join(d[1] for d in pm.delivered if d[0] == "tg")
+    assert "Power was out for" not in text, f"stale outage leaked into online msg: {text}"
+    hist = pm._load_history()
+    assert hist[-1]["end"] is not None, "manual entry must close on online confirmation"
+    assert hist[-1]["downtime_sec"] is not None and hist[-1]["downtime_sec"] < 60, hist
+
+
+def test_wan_history_entry_closes_on_online_confirmed(pm, wait_for):
+    """WAN-only outage history must not show 'ongoing' forever (P12)."""
+    pm._wan_probe_ip = lambda timeout=5: False
+    pm._wan_probe_web = lambda timeout=5: False
+    pm._esp_command = lambda d: True
+    pm._esp32_state = {"wanTimeoutMs": 600000}
+    pm.process_event("wan_suspect", 1, {"event": "wan_suspect"})
+    assert wait_for(lambda: any("Internet Down" in d[1]
+                                for d in pm.delivered if d[0] == "tg")), pm.delivered
+    assert pm._load_history()[-1]["end"] is None
+    pm._pve_probe = lambda: (True, 3600, "1h")
+    pm.process_event("online_confirmed", 3, {"event": "online_confirmed"})
+    assert wait_for(lambda: any("Confirmed Online" in d[1]
+                                for d in pm.delivered if d[0] == "tg")), pm.delivered
+    hist = pm._load_history()
+    assert hist[-1]["cause"] == "wan" and hist[-1]["end"] is not None, hist
+
+
+def test_new_mains_outage_after_open_wan_entry_starts_fresh(pm, wait_for):
+    """An open WAN entry must not swallow a later mains outage's start time."""
+    pm._wan_probe_ip = lambda timeout=5: False
+    pm._wan_probe_web = lambda timeout=5: False
+    pm._esp_command = lambda d: True
+    pm._esp32_state = {"wanTimeoutMs": 600000}
+    pm.process_event("wan_suspect", 1, {"event": "wan_suspect"})
+    assert wait_for(lambda: any("Internet Down" in d[1]
+                                for d in pm.delivered if d[0] == "tg")), pm.delivered
+    pm.process_event("mains_down", 5, {"event": "mains_down", "data": "mins=5"})
+    hist = pm._load_history()
+    assert len(hist) == 2, f"expected wan closed + fresh mains entry: {hist}"
+    assert hist[-1]["cause"] == "mains", hist
+    assert hist[0]["end"] is not None, "wan entry must be closed before new cause"
+    assert hist[-1]["start"] >= hist[0]["start"], hist

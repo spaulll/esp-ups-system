@@ -503,12 +503,22 @@ def _history_open(cause, shutdown=False):
 
     A mains outage followed by its shutdown is ONE outage — the shutdown
     only flips the flag, it never starts a second entry.
+    An open entry of a DIFFERENT cause (e.g. a stale WAN outage) is closed
+    first so it never swallows the new outage's start time.
     """
     entries = _load_history()
     if entries and entries[-1].get("end") is None:
-        if cause == "mains" or not entries[-1].get("cause"):
+        last_cause = entries[-1].get("cause")
+        if not last_cause:
             entries[-1]["cause"] = cause
-        entries[-1]["shutdown"] = bool(entries[-1].get("shutdown") or shutdown)
+            entries[-1]["shutdown"] = bool(entries[-1].get("shutdown") or shutdown)
+        elif last_cause == cause:
+            entries[-1]["shutdown"] = bool(entries[-1].get("shutdown") or shutdown)
+        else:
+            _history_close()
+            entries = _load_history()
+            entries.append({"start": time.time(), "end": None, "cause": cause,
+                            "shutdown": bool(shutdown), "downtime_sec": None})
     else:
         entries.append({"start": time.time(), "end": None, "cause": cause,
                         "shutdown": bool(shutdown), "downtime_sec": None})
@@ -569,6 +579,9 @@ def _consume_outage_line():
     if fallback:
         _history_close(fallback)
         return f"\n⏱ Power was out for {fmt_downtime(fallback)} in total."
+    # No mains memory: still close any open entry (WAN/manual) so it never
+    # shows "ongoing" forever. No duration line is emitted.
+    _history_close()
     return ""
 
 def pve_verify(expect_up, label, timeout_sec=180, interval=10):
@@ -1083,6 +1096,7 @@ def _handle_wan_down(seq, data):
 
 def process_event(evt, seq, data):
     global _last_seq, _wan_confirmed
+    global _last_mains_down_at, _last_mains_downtime_sec
     # Dropped noise: the agent ACK ("Shutdown request accepted") adds no
     # information — the "Shutting Down" command + PVE "Confirmed Offline"
     # pair already tells the story. Skip silently (seq still advances).
@@ -1139,6 +1153,12 @@ def process_event(evt, seq, data):
         _history_open("manual", shutdown=True)
     elif evt == "mains_restored":
         _history_close(_event_downtime_sec(data))
+        # The outage is over — drop the start stamp so a later unrelated
+        # manual /off + /on can't report "Power was out for 2d 4h".
+        with _lock:
+            _last_mains_down_at = None
+            _last_mains_downtime_sec = None
+        _save_outage()
     elif evt == "wan_restored":
         _wan_confirmed = False
         _history_close(_event_downtime_sec(data), min_sec=WAN_ALERT_MIN_SEC)
