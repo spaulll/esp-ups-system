@@ -538,10 +538,14 @@ void startWake() {
   // No stale shutdown-webhook retry may hit a server that is being woken.
   sdPhase = SHD_IDLE;
   // V9 flutter guard: re-arm strict mode if we are still inside the flap
-  // memory window (30 min of quiet power clears it).
+  // memory window (30 min of quiet power clears it). In GPIO test mode the
+  // input is simulated — keep the classic fast path for predictable drills.
   resetWakeGuard();
   wakeWaitStartedAt = millis();
-  if (wakeFlappySince && (millis() - wakeFlappySince < WK_FLAP_MEMORY_MS)) {
+  if (gpioTestOverride >= 0) {
+    wakeStrict = false;
+    wakeFlappySince = 0;
+  } else if (wakeFlappySince && (millis() - wakeFlappySince < WK_FLAP_MEMORY_MS)) {
     wakeStrict = true;
     wakeStabilizeUntil = millis() + WK_STABILIZE_MS;
   } else {
@@ -553,23 +557,26 @@ void startWake() {
 void handleWakeProgress(unsigned long now) {
   switch (wakePhase) {
     case WK_SETTLING: {
+      bool sim = (gpioTestOverride >= 0);   // simulated input: classic path
       // Flap watching: count confirmed down->up flips while we wait.
-      if (wkWaitDownLatched) {
-        if (mainsUpNow()) {
-          wkWaitDownLatched = false;
-          wakeBlips++;
-          if (wakeBlips > WK_BLIP_LIMIT) {
-            wakeStrict = true;
-            wakeStabilizeUntil = now + WK_STABILIZE_MS;
-            if (wakeFlappySince == 0) wakeFlappySince = now;
+      if (!sim) {
+        if (wkWaitDownLatched) {
+          if (mainsUpNow()) {
+            wkWaitDownLatched = false;
+            wakeBlips++;
+            if (wakeBlips > WK_BLIP_LIMIT) {
+              wakeStrict = true;
+              wakeStabilizeUntil = now + WK_STABILIZE_MS;
+              if (wakeFlappySince == 0) wakeFlappySince = now;
+            }
           }
+        } else if (!mainsUpNow()) {
+          wkWaitDownLatched = true;
+          wkWaitDownSince = now;
+          if (wakeStrict) wakeStabilizeUntil = now + WK_STABILIZE_MS;
         }
-      } else if (!mainsUpNow()) {
-        wkWaitDownLatched = true;
-        wkWaitDownSince = now;
-        if (wakeStrict) wakeStabilizeUntil = now + WK_STABILIZE_MS;
       }
-      if (wakeStrict) {
+      if (wakeStrict && !sim) {
         if (!mainsUpNow()) {
           // Persistent outage during the wait: abort, never boot into it.
           if (now - wkWaitDownSince >= WK_ABORT_DOWN_MS) {
@@ -592,7 +599,8 @@ void handleWakeProgress(unsigned long now) {
         lastReWol = now;
       }
       // One calm "power is unstable" message after 1h stuck in the wait.
-      if (!wakeUnstableNotified && (now - wakeWaitStartedAt >= WK_UNSTABLE_ALERT_MS)) {
+      if (!sim && !wakeUnstableNotified &&
+          (now - wakeWaitStartedAt >= WK_UNSTABLE_ALERT_MS)) {
         wakeUnstableNotified = true;
         addEvent("power_unstable");
       }
