@@ -374,6 +374,12 @@ bool restoreConditionsMet() {
 // ==================== SHUTDOWN ====================
 void executeShutdown(const char* mode) {
   manualOverride = false;
+  // A shutdown command cancels any in-flight wake: the loop returns early
+  // for non-idle wake phases, so without this the webhook below would
+  // never be sent (and online_confirmed could wipe the new flags).
+  wakePhase = WK_IDLE;
+  wolAttempts = 0;
+  wakeFailedEmitted = false;
   if (strcmp(mode, "mains") == 0) {
     sdMains = true;
     if (!wanUpNow()) sdWAN = true;
@@ -428,6 +434,8 @@ void startWake() {
   wakeTs = millis();
   wolAttempts = 0;
   wakeFailedEmitted = false;
+  // No stale shutdown-webhook retry may hit a server that is being woken.
+  sdPhase = SHD_IDLE;
   addEvent("wake_sequence_start");
 }
 
@@ -597,6 +605,7 @@ void handlePendingCommand() {
   switch (cmd) {
     case CMD_WAKE:
       if (wakePhase == WK_SETTLING || wakePhase == WK_POLLING) break;  // already waking — don't reset attempts
+      sdPhase = SHD_IDLE;   // /on cancels any pending shutdown webhook
       if (isNodeDown()) {
         manualOverride = true;
         clearFlags();
