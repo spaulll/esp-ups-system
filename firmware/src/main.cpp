@@ -19,7 +19,7 @@ const char* WIFI_SSID            = "__WIFI_SSID__";
 const char* WIFI_PASS            = "__WIFI_PASS__";
 const uint8_t MAIN_ROUTER_BSSID[] = __WIFI_BSSID_BYTES__;
 const char* OTA_PASSWORD         = "__OTA_PASSWORD__";
-const char* FW_VERSION           = "V9.0";
+const char* FW_VERSION           = "V9.1";
 
 const char* PROXMOX_IP           = "__PROXMOX_IP__";
 const char* SHUTDOWN_URL         = "__PROXMOX_SHUTDOWN_URL__";
