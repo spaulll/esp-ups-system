@@ -19,7 +19,7 @@ const char* WIFI_SSID            = "__WIFI_SSID__";
 const char* WIFI_PASS            = "__WIFI_PASS__";
 const uint8_t MAIN_ROUTER_BSSID[] = __WIFI_BSSID_BYTES__;
 const char* OTA_PASSWORD         = "__OTA_PASSWORD__";
-const char* FW_VERSION           = "V8.0";
+const char* FW_VERSION           = "V9.0";
 
 const char* PROXMOX_IP           = "__PROXMOX_IP__";
 const char* SHUTDOWN_URL         = "__PROXMOX_SHUTDOWN_URL__";
@@ -50,6 +50,21 @@ const uint8_t       MAX_WOL            = 5;
 const uint8_t       MAX_WEBHOOK_RETRY  = 6;
 const unsigned long WEBHOOK_RETRY_MS   = 10000;
 const unsigned long WAN_SUSTAIN_MS     = 30000;
+
+// ==================== V9 POWER-STABILITY RULES ====================
+// Wake-side flutter guard (never boot into unstable power):
+const uint8_t   WK_BLIP_LIMIT        = 2;          // >2 flips -> strict mode
+const unsigned long WK_STABILIZE_MS      = 300000; // strict: 5 min continuous mains
+const unsigned long WK_FLAP_MEMORY_MS    = 1800000; // stay strict for 30 min after flapping
+const unsigned long WK_UNSTABLE_ALERT_MS = 3600000; // alert once after 1h stuck waiting
+const unsigned long WK_ABORT_DOWN_MS     = 10000;  // abort wake if mains down >10s while waiting
+// Shutdown-side: a return is only "real" after this long, and only then
+// cancels/resets the countdown (otherwise the timer pauses and resumes):
+const unsigned long MAINS_REAL_RETURN_MS = 60000;
+// Adaptive post-wake re-shutdown: if mains dies again within 1h of a wake,
+// use the shorter delay instead of mainsDelayMs (battery already spent):
+const unsigned long ADAPTIVE_SHORT_DELAY_MS = 180000; // 3 min
+const unsigned long ADAPTIVE_WINDOW_MS      = 3600000; // within 1h of a wake
 // WAN double-check handshake (ESP first-detect + Pi confirm):
 // continuous fail for SUSPECT_MS -> "wan_suspect" event (Pi probes from its
 // own vantage point). The 10-min shutdown countdown starts only on confirm:
@@ -136,6 +151,20 @@ unsigned long lastLiveness = 0;
 unsigned long lastReWol = 0;
 uint8_t wolAttempts = 0;
 bool wakeFailedEmitted = false;
+// V9 stability state:
+uint8_t wakeBlips = 0;          // mains down->up flips counted during a pre-WOL wait
+bool wakeStrict = false;        // requires WK_STABILIZE_MS of continuous mains
+unsigned long wakeStabilizeUntil = 0;
+unsigned long wakeFlappySince = 0;  // 0 = not flappy; else timestamp of first flap
+bool wakeUnstableNotified = false;
+unsigned long wakeWaitStartedAt = 0;
+// shutdown-side pause/prove (real-return rule):
+bool mainsReturnSuspect = false;
+unsigned long mainsReturnSince = 0;
+unsigned long mainsOutageElapsed = 0;      // accumulated down-time ms
+unsigned long mainsLastAccumAt = 0;
+// adaptive post-wake re-shutdown:
+unsigned long lastWakeEndedAt = 0;
 
 // ==================== DEFERRED COMMANDS ====================
 enum Cmd { CMD_NONE, CMD_WAKE, CMD_SHUTDOWN, CMD_MAINSDELAY, CMD_WAN_TIMEOUT, CMD_GPIO_TEST, CMD_WAN_CONFIRM, CMD_WAN_CLEAR };
