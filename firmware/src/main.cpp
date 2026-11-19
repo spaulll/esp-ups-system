@@ -43,7 +43,7 @@ const int   WAN_PORT     = 53;
 // ==================== TIMING DEFAULTS ====================
 const unsigned long DEFAULT_MAINS_DELAY_MS = 300000;
 const unsigned long DEFAULT_WAN_TIMEOUT_MS = 600000;
-const unsigned long SETTLE_MS          = 15000;
+const unsigned long SETTLE_MS          = 30000;
 const unsigned long PROX_POLL_MS       = 15000;
 const unsigned long RE_WOL_AFTER_MS    = 120000;
 const uint8_t       MAX_WOL            = 5;
@@ -865,6 +865,7 @@ void handleGetState() {
   d["mainsDelayEffectiveMs"] = mainsEffectiveDelayMs();
   d["wanTimeoutMs"] = wanTimeoutMs;
   d["mainsFailSinceMs"] = mainsDownNotified ? mainsOutageElapsed : 0;
+  d["mainsReturnSuspect"] = mainsReturnSuspect;
   d["wanFailSinceMs"] = wanDownNotified ? (now - wanFailSince) : 0;
   d["wanSuspect"] = wanSuspect;
   d["espUptimeMs"] = now - espBootTime;

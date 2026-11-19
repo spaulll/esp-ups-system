@@ -1447,14 +1447,19 @@ def cmd_status():
     mfail = s.get("mainsFailSinceMs", 0) or 0
     mdelay = s.get("mainsDelayEffectiveMs") or s.get("mainsDelayMs", 300000) or 1
     if mains_down_notified() and mfail:
-        mfail = min(mfail + (time.time() - ts) * 1000 if ts else mfail, mdelay)
-        down_s = int(mfail // 1000)
-        remain = max(0, (mdelay - mfail) // 1000)
-        frac = max(0.0, min(1.0, mfail / mdelay))
-        lines.append("")
-        lines.append(f"⏳ <b>Power down for {fmt_downtime(down_s)}</b>")
-        lines.append(f"    Auto-shutdown in <b>{fmt_downtime(remain)}</b>")
-        lines.append(f"    <code>{_bar(frac)}</code>  {int(frac * 100)}%")
+        if s.get("mainsReturnSuspect"):
+            lines.append("")
+            lines.append("🟡 <b>Power is back — checking stability…</b>")
+            lines.append("    If it falls again, the countdown resumes where it paused.")
+        else:
+            mfail = min(mfail + (time.time() - ts) * 1000 if ts else mfail, mdelay)
+            down_s = int(mfail // 1000)
+            remain = max(0, (mdelay - mfail) // 1000)
+            frac = max(0.0, min(1.0, mfail / mdelay))
+            lines.append("")
+            lines.append(f"⏳ <b>Power down for {fmt_downtime(down_s)}</b>")
+            lines.append(f"    Auto-shutdown in <b>{fmt_downtime(remain)}</b>")
+            lines.append(f"    <code>{_bar(frac)}</code>  {int(frac * 100)}%")
     if s.get("sdMains") or s.get("sdWAN") or s.get("sdManual"):
         reason = "manual /off"
         if s.get("sdMains") and s.get("sdWAN"): reason = "power + internet loss"
@@ -1770,6 +1775,12 @@ def _build_countdown_card():
     mdelay = s.get("mainsDelayEffectiveMs") or s.get("mainsDelayMs", 300000) or 1
     if mfail <= 0:
         return None
+    if s.get("mainsReturnSuspect"):
+        # Power came back but is being proven (60s rule): show the SAME live
+        # card with an honest "checking" message, never a growing timer.
+        return ("🟡 <b>Power is back — checking stability…</b>\n"
+                "Electricity returned but must stay steady before I trust it.\n"
+                "If it falls again, the countdown resumes where it paused.")
     now_ms = (time.time() - ts) * 1000 if ts else 0
     elapsed = max(0, min(mfail + now_ms, mdelay))
     remain = max(0, mdelay - elapsed)

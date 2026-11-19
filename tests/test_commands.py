@@ -190,6 +190,44 @@ def test_delay_set_without_pending_falls_through_to_summary(pm):
     assert pm._tg_edit_msg_calls == [], "should not edit without a pending message"
 
 
+def test_status_shows_checking_stability_when_return_suspect(pm):
+    """During the 60s proof window the /status countdown must NOT grow a
+    bar — it shows the honest 'checking stability' note instead."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V9.0",
+                       "mainsDelayMs": 300000, "mainsDelayEffectiveMs": 300000,
+                       "mainsFailSinceMs": 10000, "mainsReturnSuspect": True,
+                       "sdMains": False, "sdWAN": False, "sdManual": False,
+                       "manualOverride": False}
+    text = pm.cmd_status()
+    assert "checking stability" in text, text
+    assert "Auto-shutdown in" not in text, text
+    # once the proof passes, the normal bar returns
+    pm._esp32_state["mainsReturnSuspect"] = False
+    text2 = pm.cmd_status()
+    assert "Auto-shutdown in" in text2, text2
+    assert "checking stability" not in text2, text2
+
+
+def test_countdown_card_mutates_to_checking_and_back(pm):
+    """The LIVE card shows the countdown bar normally, morphs to the
+    'checking stability' message while the return is being proven, and goes
+    back to the bar if power falls again."""
+    base = {"mainsUp": True, "wanUp": True, "fw": "V9.0",
+            "mainsDelayMs": 300000, "mainsDelayEffectiveMs": 300000,
+            "mainsFailSinceMs": 10000, "mainsReturnSuspect": False,
+            "sdMains": False, "sdWAN": False, "sdManual": False,
+            "manualOverride": False}
+    pm._esp32_state = dict(base)
+    card_normal = pm._build_countdown_card()
+    assert card_normal and "Power down for" in card_normal and "<code>" in card_normal
+    pm._esp32_state["mainsReturnSuspect"] = True
+    card_checking = pm._build_countdown_card()
+    assert "checking stability" in card_checking, card_checking
+    assert "<code>" not in card_checking, card_checking
+    pm._esp32_state["mainsReturnSuspect"] = False
+    assert "Power down for" in pm._build_countdown_card()
+
+
 def test_status_uses_effective_short_delay_when_active(pm):
     """After a wake the ESP may report a shorter effective shutdown delay
     (adaptive re-shutdown). /status must show it, not the configured 5 min."""
