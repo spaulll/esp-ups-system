@@ -71,7 +71,7 @@ def test_mains_restored_clears_stale_outage_memory(pm, wait_for):
         assert pm._last_mains_downtime_sec is None
     # later manual /off -> /on (online_confirmed verifies via PVE)
     pm.process_event("shutdown_manual_start", 3, {"event": "shutdown_manual_start"})
-    pm._pve_probe = lambda: (True, 3600, "1h")
+    pm._pve_probe = lambda: ("up", 3600, "1h")
     pm.process_event("online_confirmed", 4, {"event": "online_confirmed"})
     assert wait_for(lambda: any("Confirmed Online" in d[1]
                                 for d in pm.delivered if d[0] == "tg")), pm.delivered
@@ -92,7 +92,7 @@ def test_wan_history_entry_closes_on_online_confirmed(pm, wait_for):
     assert wait_for(lambda: any("Internet Down" in d[1]
                                 for d in pm.delivered if d[0] == "tg")), pm.delivered
     assert pm._load_history()[-1]["end"] is None
-    pm._pve_probe = lambda: (True, 3600, "1h")
+    pm._pve_probe = lambda: ("up", 3600, "1h")
     pm.process_event("online_confirmed", 3, {"event": "online_confirmed"})
     assert wait_for(lambda: any("Confirmed Online" in d[1]
                                 for d in pm.delivered if d[0] == "tg")), pm.delivered

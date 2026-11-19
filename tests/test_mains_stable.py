@@ -10,7 +10,7 @@ import time
 
 
 def _diag(pm):
-    pm._pve_probe = lambda: (True, 100, "1m")
+    pm._pve_probe = lambda: ("up", 100, "1m")
     return pm.cmd_diag()
 
 

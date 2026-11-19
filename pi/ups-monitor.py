@@ -37,6 +37,7 @@ PROXMOX_PORT       = 8006
 PROXMOX_NODE       = "__PROXMOX_NODE__"
 PVE_TOKEN          = "__PVE_TOKEN__"
 PVE_TIMEOUT        = 6
+PVE_OFFLINE_CONSECUTIVE = 2   # consecutive 'down' probes before "Confirmed Offline"
 
 TG_BOT_TOKEN       = "__TG_BOT_TOKEN__"
 TG_CHAT_ID         = "__TG_CHAT_ID__"
@@ -271,22 +272,36 @@ def _https_get_insecure(host, port, path, timeout=5, headers=None):
 
 # ===================== PVE / PROXMOX =====================
 def _pve_probe():
-    """Returns (online, uptime_sec, uptime_str). API-only, never TCP-only."""
+    """Returns (status, uptime_sec, uptime_str); status ∈ up/down/unknown.
+
+    API-only, never TCP-only. 'down' only when the API is unreachable in
+    ways that mean the node is powered off (connection refused / timeout /
+    no route). HTTP 401/5xx and garbage responses are 'unknown' — the node
+    may well be up and the API just unhappy.
+    """
     try:
         path = f"/api2/json/nodes/{PROXMOX_NODE}/status"
         status, body = _https_get_insecure(
             PROXMOX_IP, PROXMOX_PORT, path, timeout=PVE_TIMEOUT,
             headers={"Authorization": PVE_TOKEN})
-        if status != 200:
-            return False, None, "Unavailable"
-        data = json.loads(body)
-        secs = int(data.get("data", {}).get("uptime", -1))
-        if secs < 0:
-            return False, None, "Unavailable"
-        return True, secs, fmt_uptime(secs)
+        if status == 200:
+            data = json.loads(body)
+            secs = int(data.get("data", {}).get("uptime", -1))
+            if secs < 0:
+                return "unknown", None, "Unavailable"
+            return "up", secs, fmt_uptime(secs)
+        if status in (401, 403):
+            return "unknown", None, "Unauthorized"
+        return "unknown", None, "Unavailable"
+    except (ConnectionRefusedError, socket.timeout, TimeoutError) as e:
+        log.debug(f"pve probe: node unreachable ({e})")
+        return "down", None, "Offline"
+    except OSError as e:
+        log.debug(f"pve probe failed: {e}")
+        return "down", None, "Offline"
     except Exception as e:
         log.debug(f"pve probe failed: {e}")
-        return False, None, "Offline"
+        return "unknown", None, "Unavailable"
 
 def fmt_uptime(secs):
     if secs is None or secs < 0:
@@ -593,9 +608,10 @@ def pve_verify(expect_up, label, timeout_sec=180, interval=10):
     """
     def run():
         start = time.time()
+        consec_down = 0
         while time.time() - start < timeout_sec:
-            online, _uptime_sec, up_str = _pve_probe()
-            if expect_up and online:
+            status, _uptime_sec, up_str = _pve_probe()
+            if expect_up and status == "up":
                 outage_line = _consume_outage_line()
                 # Fresh boot reports 0m/1m uptime — noise, not information.
                 # Show uptime only once the node has been up a while.
@@ -609,10 +625,16 @@ def pve_verify(expect_up, label, timeout_sec=180, interval=10):
                              f"✅ <b>Proxmox Confirmed Online</b>\n\n"
                              f"{_human_reason(label)}{outage_line}{uptime_line}")
                 return
-            if not expect_up and not online:
-                notify_event("system_info", "critical",
-                             f"✅ <b>Proxmox Confirmed Offline</b>\n\n{_human_reason(label)}")
-                return
+            if not expect_up:
+                if status == "down":
+                    consec_down += 1
+                    if consec_down >= PVE_OFFLINE_CONSECUTIVE:
+                        notify_event("system_info", "critical",
+                                     f"✅ <b>Proxmox Confirmed Offline</b>\n\n{_human_reason(label)}")
+                        return
+                else:
+                    # unknown (API hiccup) must not count toward offline proof
+                    consec_down = 0
             time.sleep(interval)
         state_word = "online" if expect_up else "offline"
         notify_event("system_info", "critical",
@@ -1344,7 +1366,7 @@ def cmd_status():
         counters = dict(_daily_counters)
         ts = _esp_state_ts
         sensor_blind = _sensor_dead_since is not None
-    prox_online, _, prox_up = _pve_probe()
+    prox_status, _, prox_up = _pve_probe()
     header = f"⚡ <b>UPS Monitor</b> · <i>{time.strftime('%H:%M:%S')}</i>\n────"
 
     if not s:
@@ -1357,8 +1379,10 @@ def cmd_status():
     wan_note = " · <i>checking…</i>" if (not wan and s.get("wanSuspect") and not s.get("sdWAN")) else ""
     lines.append(f"{'🟢' if mains else '🔴'} <b>Mains</b>   <code>{'UP' if mains else 'DOWN'}</code>")
     lines.append(f"{'🟢' if wan else '🔴'} <b>WAN</b>     <code>{'UP' if wan else 'DOWN'}</code>{wan_note}")
-    lines.append(f"{'🟢' if prox_online else '🔴'} <b>Proxmox</b> <code>{'ONLINE' if prox_online else 'OFFLINE'}</code>"
-                 + (f" · {prox_up}" if prox_online else ""))
+    prox_icon = {"up": "🟢", "down": "🔴", "unknown": "🟡"}
+    prox_word = {"up": "ONLINE", "down": "OFFLINE", "unknown": "UNAVAILABLE"}
+    lines.append(f"{prox_icon[prox_status]} <b>Proxmox</b> <code>{prox_word[prox_status]}</code>"
+                 + (f" · {prox_up}" if prox_status == "up" else ""))
     if s.get("gpioTestOverride", -1) != -1:
         lines.append("")
         lines.append("🧪 <b>TEST MODE</b> — mains input simulated, real outages invisible. "
@@ -1383,14 +1407,16 @@ def cmd_status():
         elif s.get("sdMains"): reason = "power loss"
         elif s.get("sdWAN"): reason = "internet loss"
         lines.append("")
-        if prox_online:
+        if prox_status == "up":
             # Shutdown commanded but the node hasn't powered off yet (normal:
             # Proxmox with many LXCs takes minutes). Never claim "down" here.
             lines.append(f"🟡 <b>Shutting down…</b> · {reason} — waiting for the"
                          f" server to power off (can take a few minutes)")
-        else:
+        elif prox_status == "down":
             lines.append(f"🛡 <b>Server down</b> · {reason}")
-    elif not prox_online and s.get("wakePhase") in (1, 2):
+        else:
+            lines.append(f"🟡 <b>Server state unclear</b> · {reason} — API unreachable")
+    elif prox_status in ("down", "unknown") and s.get("wakePhase") in (1, 2):
         lines.append("")
         lines.append("🟡 <b>Waking…</b> — wake signal sent, waiting for the"
                      " server to come up (can take a few minutes)")
@@ -1404,7 +1430,7 @@ def cmd_diag():
     with _lock:
         s = dict(_esp32_state)
         counters = dict(_daily_counters)
-    prox_online, _, prox_up = _pve_probe()
+    prox_status, _, prox_up = _pve_probe()
     header = f"🔧 <b>Diagnostics</b> · <i>{time.strftime('%H:%M:%S')}</i>\n────"
     lines = [header]
     if not s:
@@ -1432,7 +1458,8 @@ def cmd_diag():
             age = "unknown"
         lines.append(f"🟢 <b>Mains</b>   {'UP' if s.get('mainsUp') else 'DOWN'} · last change {age}")
         lines.append(f"🟢 <b>WAN</b>     {'UP' if s.get('wanUp') else 'DOWN'}" + (" · checking…" if (not s.get("wanUp") and s.get("wanSuspect") and not s.get("sdWAN")) else ""))
-        lines.append(f"🟢 <b>Node</b>    {'ONLINE' if prox_online else 'OFFLINE'}" + (f" · {prox_up}" if prox_online else ""))
+        node_word = {"up": "ONLINE", "down": "OFFLINE", "unknown": "UNAVAILABLE"}[prox_status]
+        lines.append(f"🟢 <b>Node</b>    {node_word}" + (f" · {prox_up}" if prox_status == "up" else ""))
         lines.append("────")
         lines.append(f"⏱ <b>Delays</b>  mains {s.get('mainsDelayMs', 300000) // 60000}m · wan {s.get('wanTimeoutMs', 600000) // 60000}m")
         flags = []
@@ -1547,12 +1574,16 @@ def cmd_on():
                 return "❌ ESP32 unreachable."
             return ("✅ Override sent — auto-shutdown suspended for this outage.\n\n"
                     "The server stays up. Use /off if you want it down.")
-    prox_online, _, _ = _pve_probe()
-    if prox_online:
+    prox_status, _, _ = _pve_probe()
+    if prox_status == "up":
         return "ℹ️ Server is already up — nothing to wake."
     ok = _send_esp("wake")
     if not ok:
         return "❌ ESP32 unreachable."
+    if prox_status == "unknown":
+        return ("⚠️ Couldn't verify the server's state (API unreachable) — "
+                "sending the wake signal anyway.\n\nThe server can take a few "
+                "minutes to come up. Confirmation follows when it's actually online.")
     return ("✅ Wake commanded.\n\nWake signal sent — the server can take a few"
             " minutes to come up. Confirmation follows when it's actually online.")
 
@@ -1565,9 +1596,12 @@ def cmd_off():
     node that is still up always gets the command even if ESP flags look
     stale (e.g. a shutdown webhook that never acked).
     """
-    prox_online, _, _ = _pve_probe()
-    if not prox_online:
+    prox_status, _, _ = _pve_probe()
+    if prox_status == "down":
         return "ℹ️ Server is already down."
+    if prox_status == "unknown":
+        return ("⚠️ Can't verify the server is powered off (API unreachable). "
+                "Won't risk a shutdown — try again in a moment.")
     ok = _send_esp("shutdown")
     if not ok:
         return "❌ ESP32 unreachable."

@@ -115,11 +115,44 @@ def _get(pm, needle):
     return ""
 
 
+def test_offline_verify_requires_consecutive_down_probes(pm, wait_for):
+    """Regression (B7): a single failed probe must not announce 'Confirmed
+    Offline'. The first 'unknown' resets the streak; two real downs prove it."""
+    pm._esp32_state = {"mainsDelayMs": 300000}
+    state = {"unknown_seen": False}
+    def probe():
+        if not state["unknown_seen"]:
+            state["unknown_seen"] = True
+            return ("unknown", None, "Unavailable")
+        return ("down", None, "Offline")
+    pm._pve_probe = probe
+    pm.pve_verify(expect_up=False, label="shutdown_mains_start",
+                  timeout_sec=5, interval=0.05)
+    assert wait_for(lambda: any("Confirmed Offline" in d[1]
+                                for d in pm.delivered if d[0] == "tg")), pm.delivered
+    n = sum(1 for d in pm.delivered if d[0] == "tg" and "Confirmed Offline" in d[1])
+    assert n == 1, f"must announce exactly once: {pm.delivered}"
+
+
+def test_offline_verify_never_claims_without_down_proof(pm):
+    """All-unknown probes (API hiccup) must end in a timeout message, never
+    a false 'Confirmed Offline'."""
+    pm._esp32_state = {"mainsDelayMs": 300000}
+    pm._pve_probe = lambda: ("unknown", None, "Unavailable")
+    pm.pve_verify(expect_up=False, label="shutdown_mains_start",
+                  timeout_sec=0.6, interval=0.05)
+    time.sleep(1.2)
+    assert all("Confirmed Offline" not in d[1]
+               for d in pm.delivered if d[0] == "tg"), pm.delivered
+    assert any("Verification Timeout" in d[1]
+               for d in pm.delivered if d[0] == "tg"), pm.delivered
+
+
 def test_confirmations_deliver_immediately(pm, wait_for):
     """Offline/online confirmations are critical: immediate delivery, never
     parked in the 90s info coalescer."""
     pm._esp32_state = {"mainsDelayMs": 300000}
-    pm._pve_probe = lambda: (False, None, "Offline")
+    pm._pve_probe = lambda: ("down", None, "Offline")
     pm.pve_verify(expect_up=False, label="shutdown_mains_start",
                   timeout_sec=5, interval=0.05)
     assert wait_for(lambda: any("Confirmed Offline" in d[1]
@@ -130,7 +163,7 @@ def test_confirmations_deliver_immediately(pm, wait_for):
 
 def test_offline_verify_uses_human_reason(pm, wait_for):
     pm._esp32_state = {"mainsDelayMs": 300000}
-    pm._pve_probe = lambda: (False, None, "Offline")
+    pm._pve_probe = lambda: ("down", None, "Offline")
     pm.pve_verify(expect_up=False, label="shutdown_mains_start",
                   timeout_sec=5, interval=0.05)
     assert wait_for(lambda: _seen(pm, "Confirmed Offline")), pm.delivered
@@ -141,7 +174,7 @@ def test_offline_verify_uses_human_reason(pm, wait_for):
 
 def test_online_verify_hides_fresh_uptime_shows_outage(pm, wait_for):
     pm._last_mains_down_at = time.time() - 400
-    pm._pve_probe = lambda: (True, 30, "0m")
+    pm._pve_probe = lambda: ("up", 30, "0m")
     pm.pve_verify(expect_up=True, label="online_confirmed",
                   timeout_sec=5, interval=0.05)
     assert wait_for(lambda: _seen(pm, "Confirmed Online")), pm.delivered
@@ -154,7 +187,7 @@ def test_online_verify_hides_fresh_uptime_shows_outage(pm, wait_for):
 def test_online_verify_shows_mature_uptime(pm, wait_for):
     pm._last_mains_down_at = None
     pm._last_mains_downtime_sec = None
-    pm._pve_probe = lambda: (True, 600, "10m")
+    pm._pve_probe = lambda: ("up", 600, "10m")
     pm.pve_verify(expect_up=True, label="online_confirmed",
                   timeout_sec=5, interval=0.05)
     assert wait_for(lambda: _seen(pm, "Confirmed Online")), pm.delivered

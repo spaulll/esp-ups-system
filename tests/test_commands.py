@@ -18,7 +18,7 @@ def test_unknown_command_returns_friendly_list(pm):
 
 
 def test_on_off_commands(pm):
-    pm._pve_probe = lambda: (False, None, "Offline")
+    pm._pve_probe = lambda: ("down", None, "Offline")
     _stub_esp_command(pm, ok=True)
     assert "Wake commanded" in pm.handle_command("/on", None)
     _stub_esp_command(pm, ok=False)
@@ -31,7 +31,7 @@ def test_on_when_already_up_says_nothing_to_wake(pm):
                        "sdMains": False, "sdWAN": False, "sdManual": False,
                        "manualOverride": False,
                        "mainsFailSinceMs": 0, "wanFailSinceMs": 0}
-    pm._pve_probe = lambda: (True, 100, "1m")
+    pm._pve_probe = lambda: ("up", 100, "1m")
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/on", None)
@@ -48,7 +48,7 @@ def test_on_when_prox_offline_but_no_esp_flags_sends_wake(pm):
                        "sdMains": False, "sdWAN": False, "sdManual": False,
                        "manualOverride": False,
                        "mainsFailSinceMs": 0, "wanFailSinceMs": 0}
-    pm._pve_probe = lambda: (False, None, "Offline")
+    pm._pve_probe = lambda: ("down", None, "Offline")
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/on", None)
@@ -63,7 +63,7 @@ def test_on_when_countdown_running_sends_wake(pm):
                        "sdMains": False, "sdWAN": False, "sdManual": False,
                        "manualOverride": False,
                        "mainsFailSinceMs": 120000, "wanFailSinceMs": 0}
-    pm._pve_probe = lambda: (True, 100, "1m")
+    pm._pve_probe = lambda: ("up", 100, "1m")
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/on", None)
@@ -79,7 +79,7 @@ def test_on_when_wan_countdown_running_sends_wake(pm):
                        "sdMains": False, "sdWAN": False, "sdManual": False,
                        "manualOverride": False,
                        "mainsFailSinceMs": 0, "wanFailSinceMs": 300000}
-    pm._pve_probe = lambda: (True, 100, "1m")
+    pm._pve_probe = lambda: ("up", 100, "1m")
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/on", None)
@@ -91,7 +91,7 @@ def test_on_when_wan_countdown_running_sends_wake(pm):
 def test_off_when_already_down_says_so(pm):
     """/off when Proxmox is actually down should not send shutdown again."""
     pm._esp32_state = {"sdMains": True, "sdWAN": False, "sdManual": False}
-    pm._pve_probe = lambda: (False, None, "Offline")
+    pm._pve_probe = lambda: ("down", None, "Offline")
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/off", None)
@@ -104,7 +104,7 @@ def test_off_when_prox_offline_but_no_esp_flags_says_already_down(pm):
     instead of firing a pointless shutdown."""
     pm._esp32_state = {"mainsUp": True, "wanUp": True,
                        "sdMains": False, "sdWAN": False, "sdManual": False}
-    pm._pve_probe = lambda: (False, None, "Offline")
+    pm._pve_probe = lambda: ("down", None, "Offline")
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/off", None)
@@ -116,7 +116,7 @@ def test_off_when_prox_online_but_flags_stale_sends_shutdown(pm):
     """Shutdown webhook never acked (flags set, node still up) — /off must
     retry instead of trusting the stale flags."""
     pm._esp32_state = {"sdMains": True, "sdWAN": False, "sdManual": False}
-    pm._pve_probe = lambda: (True, 100, "1m")
+    pm._pve_probe = lambda: ("up", 100, "1m")
     sent = []
     pm._esp_command = lambda cmd: sent.append(cmd) or True
     reply = pm.handle_command("/off", None)
@@ -225,7 +225,7 @@ def test_status_shutting_down_while_node_still_online(pm):
     pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
                        "sdMains": False, "sdWAN": False, "sdManual": True,
                        "mainsFailSinceMs": 0}
-    pm._pve_probe = lambda: (True, 100, "1m")
+    pm._pve_probe = lambda: ("up", 100, "1m")
     text = pm.cmd_status()
     assert "Shutting down" in text, text
     assert "Server down" not in text, text
@@ -236,7 +236,7 @@ def test_status_server_down_only_when_actually_offline(pm):
     pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
                        "sdMains": False, "sdWAN": False, "sdManual": True,
                        "mainsFailSinceMs": 0}
-    pm._pve_probe = lambda: (False, None, "Offline")
+    pm._pve_probe = lambda: ("down", None, "Offline")
     text = pm.cmd_status()
     assert "Server down" in text, text
     assert "Shutting down" not in text, text
@@ -249,15 +249,42 @@ def test_status_waking_while_node_still_offline(pm):
         pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
                            "sdMains": False, "sdWAN": False, "sdManual": False,
                            "wakePhase": phase, "mainsFailSinceMs": 0}
-        pm._pve_probe = lambda: (False, None, "Offline")
+        pm._pve_probe = lambda: ("down", None, "Offline")
         text = pm.cmd_status()
         assert "Waking" in text, f"phase={phase}: {text}"
+
+
+def test_off_when_pve_unknown_refuses_to_risk_shutdown(pm):
+    """API unreachable ≠ server down: /off must NOT say 'already down' and
+    must NOT fire a shutdown on a possibly-running server."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": True,
+                       "sdMains": False, "sdWAN": False, "sdManual": False}
+    pm._pve_probe = lambda: ("unknown", None, "Unavailable")
+    sent = []
+    pm._esp_command = lambda cmd: sent.append(cmd) or True
+    reply = pm.handle_command("/off", None)
+    assert "already down" not in reply, reply
+    assert "Won't risk" in reply or "can't verify" in reply.lower(), reply
+    assert sent == [], f"no shutdown may be sent on unknown state: {sent}"
+
+
+def test_on_when_pve_unknown_still_wakes_but_says_so(pm):
+    pm._esp32_state = {"mainsUp": True, "wanUp": True,
+                       "sdMains": False, "sdWAN": False, "sdManual": False,
+                       "manualOverride": False,
+                       "mainsFailSinceMs": 0, "wanFailSinceMs": 0}
+    pm._pve_probe = lambda: ("unknown", None, "Unavailable")
+    sent = []
+    pm._esp_command = lambda cmd: sent.append(cmd) or True
+    reply = pm.handle_command("/on", None)
+    assert "wake signal anyway" in reply, reply
+    assert sent == [{"cmd": "wake"}], sent
 
 
 def test_off_ack_sets_expectations(pm):
     """Immediate /off reply must warn power-off takes minutes and that
     confirmation follows — no 'confirmed off' claim."""
-    pm._pve_probe = lambda: (True, 100, "1m")
+    pm._pve_probe = lambda: ("up", 100, "1m")
     pm._esp_command = lambda cmd: True
     reply = pm.handle_command("/off", None)
     assert "Shutdown commanded" in reply, reply
@@ -273,7 +300,7 @@ def test_on_ack_sets_expectations(pm):
                        "sdMains": False, "sdWAN": False, "sdManual": True,
                        "manualOverride": False,
                        "mainsFailSinceMs": 0, "wanFailSinceMs": 0}
-    pm._pve_probe = lambda: (False, None, "Offline")
+    pm._pve_probe = lambda: ("down", None, "Offline")
     pm._esp_command = lambda cmd: True
     reply = pm.handle_command("/on", None)
     assert "Wake commanded" in reply, reply

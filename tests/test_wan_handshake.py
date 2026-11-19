@@ -149,7 +149,7 @@ def test_online_confirmed_clears_wan_confirm_flag(pm, wait_for):
     _wait_tg(pm, wait_for, "Internet Down")
     assert pm._wan_confirmed is True
     # wake completes -> ESP emits online_confirmed
-    pm._pve_probe = lambda: (True, 3600, "1h")
+    pm._pve_probe = lambda: ("up", 3600, "1h")
     pm.process_event("online_confirmed", 2, {"event": "online_confirmed"})
     time.sleep(0.3)
     assert pm._wan_confirmed is False, "next outage must not be treated as already-confirmed"
