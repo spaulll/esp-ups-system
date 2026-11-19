@@ -68,6 +68,8 @@ const char* NVS_MAN_OVR   = "manOvr";
 const char* NVS_MAINS_DELAY = "mainsDelay";
 const char* NVS_WAN_TIMEOUT = "wanTimeout";
 const char* NVS_SEQ         = "seq";
+const char* NVS_MAINS_REMAIN = "mainsRemain";
+const char* NVS_WAN_REMAIN   = "wanRemain";
 
 // ==================== STATE ====================
 bool sdMains      = false;
@@ -149,9 +151,11 @@ TaskHandle_t wanTaskH   = NULL;
 
 // ==================== FORWARD DECLARATIONS ====================
 uint32_t addEvent(const char* evt, const char* data);
+void persistCountdowns();
 void notifyPi(const char* evt, uint32_t seq);
 void saveState();
 void clearFlags();
+bool isNodeDown();
 bool wanUpNow();
 void confirmWan(const char* src);
 void clearWan(const char* src);
@@ -194,6 +198,18 @@ void loadState() {
   saved = p.getULong(NVS_WAN_TIMEOUT, 0);
   if (saved >= 300000UL && saved <= 120UL * 60000UL) wanTimeoutMs = saved;
   evSeq = p.getULong(NVS_SEQ, 0);
+  // Resurrect an interrupted countdown from its stored remaining time.
+  // (Flags set means the shutdown already fired — countdown is moot.)
+  unsigned long mr = p.getULong(NVS_MAINS_REMAIN, 0);
+  if (mr > 0 && !isNodeDown()) {
+    mainsDownNotified = true;
+    mainsFailSince = millis() - min(mr, mainsDelayMs);
+  }
+  unsigned long wr = p.getULong(NVS_WAN_REMAIN, 0);
+  if (wr > 0 && !isNodeDown()) {
+    wanDownNotified = true;
+    wanFailSince = millis() - min(wr, wanTimeoutMs);
+  }
   p.end();
 }
 
@@ -211,6 +227,26 @@ void clearFlags() {
   saveState();
 }
 
+// Persist the countdown's REMAINING time so an ESP reboot mid-outage does
+// not restart the clock from zero. Written on transitions and ~every 60s
+// while a countdown is live (bounded NVS wear).
+void persistCountdowns() {
+  Preferences p; p.begin(NVS_NS, false);
+  unsigned long now = millis();
+  unsigned long mRemain = 0, wRemain = 0;
+  if (mainsDownNotified && !isNodeDown()) {
+    unsigned long elapsed = now - mainsFailSince;
+    mRemain = (elapsed >= mainsDelayMs) ? 0 : mainsDelayMs - elapsed;
+  }
+  if (wanDownNotified && !isNodeDown()) {
+    unsigned long elapsed = now - wanFailSince;
+    wRemain = (elapsed >= wanTimeoutMs) ? 0 : wanTimeoutMs - elapsed;
+  }
+  p.putULong(NVS_MAINS_REMAIN, mRemain);
+  p.putULong(NVS_WAN_REMAIN, wRemain);
+  p.end();
+}
+
 void resetFailureWindows() {
   mainsDownNotified = false;
   mainsFailSince = 0;
@@ -219,6 +255,7 @@ void resetFailureWindows() {
   wanSuspect = false;
   wanSuspectSince = 0;
   wanFirstFailSince = 0;
+  persistCountdowns();
 }
 
 // Latch a CONFIRMED wan-down and start the wanTimeoutMs shutdown countdown.
@@ -233,6 +270,7 @@ void confirmWan(const char* src) {
     wanDownNotified = true;
     wanFailSince = millis();
     addEvent("wan_down", src);
+    persistCountdowns();
   }
 }
 
@@ -246,6 +284,7 @@ void clearWan(const char* src) {
   wanDownNotified = false;
   wanFailSince = 0;
   addEvent("wan_cleared", src);
+  persistCountdowns();
 }
 
 // ==================== EVENT LEDGER ====================
@@ -397,6 +436,7 @@ void executeShutdown(const char* mode) {
   }
   shutdownCount++;
   saveState();
+  persistCountdowns();   // countdown is moot now — clear stored remainder
   sdPhase = SHD_SENDING;
   sdRetry = 0;
   sdLastTry = 0;
@@ -913,6 +953,7 @@ void loop() {
       mainsFailSince = now;
       mainsDownCount++;
       addEvent("mains_down", ("mins=" + String(mainsDelayMs / 60000UL)).c_str());
+      persistCountdowns();
     }
     if (!manualOverride && !isNodeDown() && (now - mainsFailSince >= mainsDelayMs)) {
       executeShutdown("mains");
@@ -923,6 +964,7 @@ void loop() {
       mainsDownNotified = false;
       mainsFailSince = 0;
       addEvent("mains_restored", ("downtimeMs=" + String(dur)).c_str());
+      persistCountdowns();
     }
   }
   // Manual override lasts until BOTH causes have cleared: a /on during a
@@ -973,6 +1015,16 @@ void loop() {
       wanSuspect = false;
       wanSuspectSince = 0;
       addEvent("wan_restored", ("downtimeMs=" + String(dur)).c_str());
+      persistCountdowns();
     }
+  }
+  // Refresh stored countdown remainders ~every 60s while live (bounded NVS
+  // writes) so a reboot mid-outage resumes close to the real elapsed time.
+  static unsigned long lastCdPersist = 0;
+  if ((mainsDownNotified || wanDownNotified) && (now - lastCdPersist >= 60000UL)) {
+    lastCdPersist = now;
+    persistCountdowns();
+  } else if (!mainsDownNotified && !wanDownNotified) {
+    lastCdPersist = 0;
   }
 }
