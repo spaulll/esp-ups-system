@@ -1160,6 +1160,17 @@ def process_event(evt, seq, data):
 
 def reconcile_once():
     global _last_seq, _sensor_dead_since, _esp_state_ts, _sensor_blind_announced
+    try:
+        _reconcile_once()
+    except Exception:
+        # Never allow an unexpected failure to kill the reconciler thread
+        # (it would leave the whole system deaf until the systemd watchdog
+        # restarts the service).
+        log.exception("reconciler iteration failed")
+
+
+def _reconcile_once():
+    global _last_seq, _sensor_dead_since, _esp_state_ts, _sensor_blind_announced
     with _reconcile_lock:
         state = _esp_state()
         if state is not None:
@@ -1200,8 +1211,14 @@ def reconcile_once():
                 notify_event("event_log_gap", "warning",
                              f"⚠️ <b>Event Log Gap</b>\n\nJumped from seq {_last_seq} to {seqs[0]} — {seqs[0]-expected} event(s) may be lost.")
             for e in events:
-                process_event(e.get("event"), e.get("seq"), e)
-                _last_seq = max(_last_seq, int(e.get("seq", _last_seq)))
+                seq = int(e.get("seq", _last_seq))
+                try:
+                    process_event(e.get("event"), seq, e)
+                except Exception:
+                    # One bad event must never kill the reconciler thread or
+                    # block every later event: log, advance past it, move on.
+                    log.exception(f"process_event failed for seq={seq} event={e.get('event')!r}")
+                _last_seq = max(_last_seq, seq)
             _save_seq()
 
 def reconciler_loop():

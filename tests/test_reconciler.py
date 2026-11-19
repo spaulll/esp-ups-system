@@ -85,6 +85,35 @@ def test_transient_single_poll_failure_stays_silent(pm):
     assert pm._sensor_dead_since is None
 
 
+def test_bad_event_does_not_kill_reconciler(pm, wait_for):
+    """One event whose formatter raises must neither kill the thread nor block
+    the events after it — it is logged and skipped, seq still advances."""
+    def boom(d):
+        raise RuntimeError("boom")
+    pm.EVENT_TAXONOMY["mains_down"] = ("critical", boom)
+    stub_esp(pm, state={"mainsUp": False, "wanUp": True, "seq": 2},
+             events=[{"seq": 1, "event": "mains_down", "data": "mins=5"},
+                     {"seq": 2, "event": "shutdown_mains_start", "data": ""}])
+    pm.reconcile_once()          # must not raise
+    assert pm._last_seq == 2, f"seq must advance past bad event: {pm._last_seq}"
+    assert wait_for(lambda: any(d[0] == "tg" and "Shutting Down" in d[1]
+                               for d in pm.delivered)), pm.delivered
+    # thread collectively alive: a second pass works
+    stub_esp(pm, state={"mainsUp": True, "wanUp": True, "seq": 2}, events=[])
+    pm.reconcile_once()
+    assert pm._last_seq == 2
+
+
+def test_unexpected_reconcile_error_does_not_raise(pm):
+    """Even a fully unexpected error in the reconcile body is contained."""
+    def bad_state():
+        raise OSError("esp unreachable mid-read")
+    pm._esp_state = bad_state
+    stub_esp(pm, state=None, events=[])
+    pm._esp_state = bad_state
+    pm.reconcile_once()          # must not propagate
+
+
 def test_reconcile_stamps_esp_state_time(pm):
     """reconcile_once must update _esp_state_ts — the live countdown card and
     /status extrapolate from it; a stale 0.0 freezes them and makes every
