@@ -125,6 +125,7 @@ enum ShdPhase { SHD_IDLE, SHD_SENDING, SHD_GIVEUP };
 ShdPhase sdPhase = SHD_IDLE;
 uint8_t sdRetry = 0;
 unsigned long sdLastTry = 0;
+bool bootReArmPending = false;   // auto-flags set at boot: probe before webhook
 
 enum WakePhase { WK_IDLE, WK_SETTLING, WK_POLLING, WK_FAILED };
 WakePhase wakePhase = WK_IDLE;
@@ -793,12 +794,14 @@ void setup() {
   loadState();
   Serial.printf("[boot] flags s=%d w=%d m=%d off=%d ovr=%d\n",
                 sdMains, sdWAN, sdManual, manualOffWhileMainsDown, manualOverride);
-  // if flags set at boot, re-issue shutdown webhook (we can't trust it completed
-  // before a reboot). Webhook retries will fail harmlessly if node is already off.
+  // If flags were set before this boot, we must NOT blindly re-fire the
+  // shutdown webhook: after a total blackout the node's BIOS may already
+  // have booted it (it would then receive a SECOND shutdown command right
+  // after coming back up). Defer to a post-WiFi liveness probe in loop()
+  // (bootReArmPending): node already up -> adopt reality and clear auto
+  // flags; node still down -> start the classic webhook retry loop.
   if (isNodeDown()) {
-    sdPhase = SHD_SENDING;
-    sdRetry = 0;
-    sdLastTry = 0;
+    bootReArmPending = true;
   }
   esp_task_wdt_init(30, true);
   WiFi.mode(WIFI_STA);
@@ -861,6 +864,23 @@ void loop() {
     if (wanUpSince == 0) wanUpSince = now;
   } else {
     wanUpSince = 0;
+  }
+  // Boot re-arm probe: only after WiFi is up can we tell whether the node is
+  // already alive (BIOS auto-boot after a blackout) or genuinely still down.
+  if (bootReArmPending && WiFi.status() == WL_CONNECTED) {
+    if (!sdManual && (sdMains || sdWAN) && nodeLivenessOk()) {
+      // The node is up on its own — the shutdown either completed pre-reboot
+      // or was never needed; adopt reality, never re-issue a webhook.
+      bootReArmPending = false;
+      clearFlags();
+      resetFailureWindows();
+      addEvent("online_confirmed");
+    } else {
+      bootReArmPending = false;
+      sdPhase = SHD_SENDING;
+      sdRetry = 0;
+      sdLastTry = 0;
+    }
   }
   // handle ongoing shutdown webhook
   handleShutdownProgress(now);
