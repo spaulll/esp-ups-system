@@ -232,7 +232,13 @@ void loadState() {
   unsigned long mr = p.getULong(NVS_MAINS_REMAIN, 0);
   if (mr > 0 && !isNodeDown()) {
     mainsDownNotified = true;
-    mainsFailSince = millis() - min(mr, mainsDelayMs);
+    if (mr <= mainsDelayMs) {
+      mainsOutageElapsed = mainsDelayMs - mr;
+    } else {
+      mainsOutageElapsed = 0;
+    }
+    mainsLastAccumAt = millis();
+    mainsFailSince = millis();
   }
   unsigned long wr = p.getULong(NVS_WAN_REMAIN, 0);
   if (wr > 0 && !isNodeDown()) {
@@ -264,7 +270,7 @@ void persistCountdowns() {
   unsigned long now = millis();
   unsigned long mRemain = 0, wRemain = 0;
   if (mainsDownNotified && !isNodeDown()) {
-    unsigned long elapsed = now - mainsFailSince;
+    unsigned long elapsed = mainsOutageElapsed;   // accumulated, paused during suspect
     mRemain = (elapsed >= mainsDelayMs) ? 0 : mainsDelayMs - elapsed;
   }
   if (wanDownNotified && !isNodeDown()) {
@@ -279,6 +285,10 @@ void persistCountdowns() {
 void resetFailureWindows() {
   mainsDownNotified = false;
   mainsFailSince = 0;
+  mainsReturnSuspect = false;
+  mainsReturnSince = 0;
+  mainsOutageElapsed = 0;
+  mainsLastAccumAt = 0;
   wanDownNotified = false;
   wanFailSince = 0;
   wanSuspect = false;
@@ -770,7 +780,7 @@ void handleGetState() {
   d["manualOverride"] = manualOverride;
   d["mainsDelayMs"] = mainsDelayMs;
   d["wanTimeoutMs"] = wanTimeoutMs;
-  d["mainsFailSinceMs"] = mainsDownNotified ? (now - mainsFailSince) : 0;
+  d["mainsFailSinceMs"] = mainsDownNotified ? mainsOutageElapsed : 0;
   d["wanFailSinceMs"] = wanDownNotified ? (now - wanFailSince) : 0;
   d["wanSuspect"] = wanSuspect;
   d["espUptimeMs"] = now - espBootTime;
@@ -971,25 +981,50 @@ void loop() {
     blipCount += blips;
     addEvent("mains_blip", (String(blips) + "x").c_str());
   }
-  // MAINS COUNTDOWN
+  // MAINS COUNTDOWN (V9: accumulate down-time; a return only counts as real
+  // after MAINS_REAL_RETURN_MS — meanwhile the timer is paused, not reset).
+  if (mainsDownNotified && !mainsReturnSuspect) {
+    if (mainsLastAccumAt == 0) mainsLastAccumAt = now;
+    mainsOutageElapsed += (now - mainsLastAccumAt);
+    if (mainsOutageElapsed > mainsDelayMs) mainsOutageElapsed = mainsDelayMs;
+    mainsLastAccumAt = now;
+  }
   if (!mainsUp) {
-    if (!mainsDownNotified) {
+    if (mainsReturnSuspect) {
+      // The candidate return was a lie — resume the countdown where it paused.
+      mainsReturnSuspect = false;
+      mainsReturnSince = 0;
+      mainsLastAccumAt = now;
+    } else if (!mainsDownNotified) {
       mainsDownNotified = true;
       mainsFailSince = now;
       mainsDownCount++;
+      mainsOutageElapsed = 0;
+      mainsLastAccumAt = now;
       addEvent("mains_down", ("mins=" + String(mainsDelayMs / 60000UL)).c_str());
       persistCountdowns();
     }
-    if (!manualOverride && !isNodeDown() && (now - mainsFailSince >= mainsDelayMs)) {
+    if (!manualOverride && !isNodeDown() && !mainsReturnSuspect &&
+        (mainsOutageElapsed >= mainsDelayMs)) {
       executeShutdown("mains");
     }
   } else {
-    if (mainsDownNotified) {
-      unsigned long dur = now - mainsFailSince;
-      mainsDownNotified = false;
-      mainsFailSince = 0;
-      addEvent("mains_restored", ("downtimeMs=" + String(dur)).c_str());
-      persistCountdowns();
+    if (mainsDownNotified && !mainsReturnSuspect) {
+      // Candidate return: pause the timer and prove it for 60s.
+      mainsReturnSuspect = true;
+      mainsReturnSince = now;
+    } else if (mainsReturnSuspect) {
+      if (now - mainsReturnSince >= MAINS_REAL_RETURN_MS) {
+        unsigned long dur = mainsOutageElapsed;
+        mainsDownNotified = false;
+        mainsFailSince = 0;
+        mainsReturnSuspect = false;
+        mainsReturnSince = 0;
+        mainsOutageElapsed = 0;
+        mainsLastAccumAt = 0;
+        addEvent("mains_restored", ("downtimeMs=" + String(dur)).c_str());
+        persistCountdowns();
+      }
     }
   }
   // Manual override lasts until BOTH causes have cleared: a /on during a
