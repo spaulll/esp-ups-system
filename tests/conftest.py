@@ -20,6 +20,7 @@ def _load_pi_module():
     env = dict(os.environ)
     env.setdefault("TG_BOT_TOKEN", "1234567890:TEST")
     env.setdefault("TG_CHAT_ID", "123456789")
+    env.setdefault("TG_OWNER_ID", "")
     env.setdefault("TG_PROXY", "")
     env.setdefault("NTFY_URL", "http://10.10.10.241")
     env.setdefault("NTFY_TOPIC", "ups")

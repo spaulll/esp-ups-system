@@ -211,6 +211,17 @@ def test_status_quiet_when_live_sensing(pm):
     assert "TEST MODE" not in pm.cmd_status()
 
 
+def test_diag_shows_real_wol_rexmit_count(pm):
+    """Regression: the WOL re-send figure must come from ESP state counters,
+    not the Pi's daily counters (which never contain that key)."""
+    pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
+                       "counters": {"wolRexmit": 7}}
+    text = pm.cmd_diag()
+    assert "7 re-sends" in text, text
+    pm._esp32_state["counters"] = {}
+    assert "0 re-sends" in pm.cmd_diag()
+
+
 def test_diag_shows_gpio_test_override(pm):
     pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0",
                        "gpioTestOverride": 1}

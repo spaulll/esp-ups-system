@@ -41,6 +41,11 @@ PVE_OFFLINE_CONSECUTIVE = 2   # consecutive 'down' probes before "Confirmed Offl
 
 TG_BOT_TOKEN       = "__TG_BOT_TOKEN__"
 TG_CHAT_ID         = "__TG_CHAT_ID__"
+# Optional: numeric Telegram user ID allowed to issue commands. Empty
+# (default) = any member of TG_CHAT_ID may issue commands.
+TG_OWNER_ID        = "__TG_OWNER_ID__"
+if TG_OWNER_ID.startswith("__") and TG_OWNER_ID.endswith("__"):
+    TG_OWNER_ID = ""   # unfilled placeholder -> owner check disabled
 TG_POLL_TIMEOUT    = 30   # long-poll wait: idle getUpdates re-issues (and re-resolves
                            # api.telegram.org) this often; Telegram still returns
                            # instantly when a command arrives, so no latency cost
@@ -190,6 +195,17 @@ def _append_missed(entry):
 def _today():
     return time.strftime("%Y-%m-%d")
 
+
+def _counters_current():
+    """Return today's counters, rolling over at midnight even before the
+    first bump of the new day (display must never show yesterday's numbers)."""
+    global _daily_counters
+    with _lock:
+        if _daily_counters.get("date") != _today():
+            _daily_counters = {"date": _today(), "mains_down": 0,
+                               "shutdowns": 0, "blips": 0}
+        return dict(_daily_counters)
+
 def _load_counters():
     global _daily_counters
     data = _load_json(COUNTERS_FILE, None)
@@ -266,9 +282,12 @@ def _https_get_insecure(host, port, path, timeout=5, headers=None):
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
-    conn.request("GET", path, headers=headers or {})
-    r = conn.getresponse()
-    return r.status, r.read().decode()
+    try:
+        conn.request("GET", path, headers=headers or {})
+        r = conn.getresponse()
+        return r.status, r.read().decode()
+    finally:
+        conn.close()
 
 # ===================== PVE / PROXMOX =====================
 def _pve_probe():
@@ -883,6 +902,7 @@ def _tg_opener():
     return urllib.request.build_opener()
 
 def _tg_send(text):
+    text = _truncate_tg(_tg_sanitize(text))
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     data = json.dumps({"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"}).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
@@ -896,6 +916,7 @@ def _tg_send(text):
 
 def _tg_send_msg(text):
     """Send a message and return its message_id, or None on failure."""
+    text = _truncate_tg(_tg_sanitize(text))
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     data = json.dumps({"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"}).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
@@ -911,6 +932,7 @@ def _tg_send_msg(text):
 
 def _tg_edit_msg(message_id, text):
     """Edit an existing bot message in place. Returns True on success."""
+    text = _truncate_tg(_tg_sanitize(text))
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/editMessageText"
     data = json.dumps({
         "chat_id": TG_CHAT_ID, "message_id": message_id,
@@ -940,6 +962,32 @@ def _tg_del_msg(message_id):
 def _strip_html(text):
     text = re.sub(r"</?(b|i|u|s|code|pre|a)[^>]*>", "", text)
     return html.unescape(text)
+
+
+_SAFE_TAGS = re.compile(r"</?(b|i|u|s|code|pre|a)(\s[^>]*)?>")
+
+def _tg_sanitize(text):
+    """Escape anything that would break Telegram's HTML parse mode.
+
+    Allows our own simple formatting tags; escapes any other '<', '>' or '&'
+    so a stray character in device data can never make Telegram reject the
+    message (which would silently fall back to ntfy).
+    """
+    out = []
+    pos = 0
+    for m in _SAFE_TAGS.finditer(text):
+        out.append(html.escape(text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(html.escape(text[pos:]))
+    return "".join(out)
+
+
+def _truncate_tg(text, limit=4000):
+    """Telegram rejects messages > 4096 chars; keep accepted copies whole."""
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1] + "…"
 
 def _ntfy_send(text, urgent=False, tg_failed=False):
     body = _strip_html(text)
@@ -1363,9 +1411,9 @@ def _countdown_active():
 def cmd_status():
     with _lock:
         s = dict(_esp32_state)
-        counters = dict(_daily_counters)
         ts = _esp_state_ts
         sensor_blind = _sensor_dead_since is not None
+    counters = _counters_current()
     prox_status, _, prox_up = _pve_probe()
     header = f"⚡ <b>UPS Monitor</b> · <i>{time.strftime('%H:%M:%S')}</i>\n────"
 
@@ -1429,7 +1477,7 @@ def cmd_status():
 def cmd_diag():
     with _lock:
         s = dict(_esp32_state)
-        counters = dict(_daily_counters)
+    counters = _counters_current()
     prox_status, _, prox_up = _pve_probe()
     header = f"🔧 <b>Diagnostics</b> · <i>{time.strftime('%H:%M:%S')}</i>\n────"
     lines = [header]
@@ -1477,7 +1525,8 @@ def cmd_diag():
         if _last_seq >= int(s.get('seq', _last_seq)):
             led += " · synced"
         lines.append(f"🧠 <b>Ledger</b>  {led}")
-        lines.append(f"📡 <b>Wake</b>    {s.get('wolAttempts', 0)} this cycle · {counters.get('wolRexmit', 0)} re-sends")
+        wol_rexmit = (s.get("counters") or {}).get("wolRexmit", 0)
+        lines.append(f"📡 <b>Wake</b>    {s.get('wolAttempts', 0)} this cycle · {wol_rexmit} re-sends")
     return "\n".join(lines)
 
 def cmd_set_delay(cmd, mins_str):
@@ -1536,6 +1585,8 @@ def _tg_poll():
                 chat = msg.get("chat", {})
                 if str(chat.get("id")) != TG_CHAT_ID:
                     continue
+                if not _sender_allowed(msg):
+                    continue
                 text = (msg.get("text") or "").strip()
                 if not text.startswith("/"):
                     continue
@@ -1548,6 +1599,14 @@ def _tg_poll():
         except Exception as e:
             log.warning(f"tg poll error: {e}")
             time.sleep(3)
+
+def _sender_allowed(msg):
+    """Optional owner restriction: when TG_OWNER_ID is set, only that Telegram
+    user may issue commands (any member of the chat would otherwise do)."""
+    if not TG_OWNER_ID:
+        return True
+    return str((msg.get("from") or {}).get("id", "")) == str(TG_OWNER_ID)
+
 
 def _esp_snapshot():
     with _lock:
