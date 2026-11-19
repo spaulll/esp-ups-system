@@ -274,6 +274,7 @@ void notifyPi(const char* evt, uint32_t seq) {
   HTTPClient http;
   String url = String(PI_NOTIFY_URL) + "?event=" + evt + "&seq=" + String(seq) + "&token=" + NOTIFY_TOKEN;
   http.begin(c, url);
+  http.setConnectTimeout(1500);   // don't stall the main loop on a dead Pi
   http.setTimeout(1500);
   http.GET();
   http.end();
@@ -466,7 +467,10 @@ void handleWakeProgress(unsigned long now) {
           addEvent("wol_rexmitted", ("attempt=" + String(wolAttempts) + "/" + String(MAX_WOL)).c_str());
           sendWolBurst();
           lastReWol = now;
-        } else if (wolAttempts >= MAX_WOL && !wakeFailedEmitted) {
+        } else if (wolAttempts >= MAX_WOL && !wakeFailedEmitted &&
+                   now - lastReWol >= RE_WOL_AFTER_MS) {
+          // Give the final burst the full 120s window too — declaring
+          // failure on the very next 15s poll is far too early.
           wakeFailedEmitted = true;
           wakeFailedCount++;
           addEvent("wake_failed");
@@ -576,9 +580,9 @@ void dumpWifiScan() {
 }
 
 void handleWifiReconnect() {
+  static unsigned long last = 0;
+  static unsigned long failSince = 0;
   if (WiFi.status() != WL_CONNECTED) {
-    static unsigned long last = 0;
-    static unsigned long failSince = 0;
     unsigned long now = millis();
     if (now - last > 5000) {
       last = now;
@@ -595,6 +599,7 @@ void handleWifiReconnect() {
     }
   } else {
     bssidLockActive = true;   // re-arm lock once we have a working link
+    failSince = 0;            // next drop gets a fresh 30s grace window
   }
 }
 
