@@ -49,6 +49,34 @@ def test_sensor_blind_after_dead_threshold(pm, wait_for):
     assert wait_for(lambda: any(d[0] == "tg" and "Sensor Blind" in d[1] for d in pm.delivered)), pm.delivered
 
 
+def test_sensor_blind_announces_once_per_episode(pm, wait_for):
+    """Regression: the blind alert used to re-fire every ~45s. It must
+    announce exactly once until the sensor comes back (B6)."""
+    stub_esp(pm, state=None)
+    pm.reconcile_once()                     # first failure: arms, no alert
+    pm._sensor_dead_since = time.time() - pm.SENSOR_DEAD_SEC - 1
+    pm.reconcile_once()                     # threshold crossed -> announce
+    assert wait_for(lambda: any(d[0] == "tg" and "Sensor Blind" in d[1]
+                               for d in pm.delivered)), pm.delivered
+    n = sum(1 for d in pm.delivered if d[0] == "tg" and "Sensor Blind" in d[1])
+    # keep failing for many more cycles: still one alert
+    for _ in range(5):
+        pm._sensor_dead_since = time.time() - pm.SENSOR_DEAD_SEC - 1
+        pm.reconcile_once()
+    time.sleep(0.3)
+    total = sum(1 for d in pm.delivered if d[0] == "tg" and "Sensor Blind" in d[1])
+    assert total == n, f"blind alert repeated: {total} (expected {n})"
+
+
+def test_status_marks_stale_data_when_sensor_blind(pm):
+    pm._esp32_state = {"mainsUp": True, "wanUp": True, "fw": "V7.0"}
+    pm._sensor_dead_since = time.time() - 100
+    text = pm.cmd_status()
+    assert "Sensor unreachable" in text and "stale" in text, text
+    pm._sensor_dead_since = None
+    assert "Sensor unreachable" not in pm.cmd_status()
+
+
 def test_sensor_back_notifies_on_recovery(pm, wait_for):
     pm._sensor_dead_since = time.time() - pm.SENSOR_DEAD_SEC - 1
     pm._sensor_blind_announced = True   # a blind was actually sent earlier

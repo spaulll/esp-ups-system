@@ -1222,10 +1222,10 @@ def _reconcile_once():
             now = time.time()
             if _sensor_dead_since is None:
                 _sensor_dead_since = now
-            elif now - _sensor_dead_since >= SENSOR_DEAD_SEC:
+            elif now - _sensor_dead_since >= SENSOR_DEAD_SEC and not _sensor_blind_announced:
+                # Announce ONCE per blind episode — never every 45s.
                 notify_event("sensor_blind", "warning",
                              "⚠️ <b>Sensor Blind</b>\n\nESP32 unreachable ≥45s. No false alerts — authority stays autonomous.")
-                _sensor_dead_since = now
                 _sensor_blind_announced = True
             return
 
@@ -1343,11 +1343,14 @@ def cmd_status():
         s = dict(_esp32_state)
         counters = dict(_daily_counters)
         ts = _esp_state_ts
+        sensor_blind = _sensor_dead_since is not None
     prox_online, _, prox_up = _pve_probe()
     header = f"⚡ <b>UPS Monitor</b> · <i>{time.strftime('%H:%M:%S')}</i>\n────"
 
     if not s:
         return header + "\n\n⚠️ <b>Sensor offline</b>\n\nNo live data available right now."
+    if sensor_blind:
+        header += "\n⚠️ <b>Sensor unreachable</b> — data below may be stale"
     mains = s.get("mainsUp", False)
     wan = s.get("wanUp", False)
     lines = [header]
